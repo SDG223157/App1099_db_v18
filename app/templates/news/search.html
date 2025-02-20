@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+   <meta charset="UTF-8">
+   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+   <title>News Search</title>
+   <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+   <style>
+       .markdown-content {
+           @apply space-y-4;
+       }
+       .markdown-content ul {
+           list-style: disc !important;
+           padding-left: 2rem !important;
+           margin-bottom: 1rem !important;
+       }
+       .markdown-content ul ul {
+           list-style: circle !important;
+           padding-left: 2rem !important;
+       }
+       .markdown-content ul ul ul {
+           list-style: square !important;
+       }
+       .markdown-content li {
+           display: list-item !important;
+           list-style-position: outside !important;
+           margin-bottom: 0.5rem !important;
+       }
+       .markdown-content li::marker {
+           color: #4a5568;  /* Match text color */
+           font-size: 1.1em;
+       }
+       .markdown-content h3 {
+           @apply text-lg font-semibold mt-4 mb-2;
+       }
+       .markdown-content h2 {
+           font-size: 1.25rem;
+           font-weight: 600;
+           margin-top: 1rem;
+           margin-bottom: 0.5rem;
+       }
+       .markdown-content h4 {
+           @apply font-medium text-gray-700 mt-4 mb-2 text-base;
+       }
+   </style>
+</head>
+<body class="bg-gray-50">
+   <div class="container mx-auto p-4">
+       <div class="flex justify-between items-center mb-6">
+           <h1 class="text-2xl font-bold">News Search</h1>
+           <a href="{{ url_for('main.index') }}" 
+              class="px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600 transition-colors">
+               Home
+           </a>
+       </div>
+
+       <div class="mb-8 flex justify-between items-center">
+           <form id="searchForm" method="GET" action="{{ url_for('news.search') }}" class="space-y-4 flex-grow">
+               <div class="flex flex-col space-y-2">
+                   <label for="symbol" class="text-gray-700 font-medium">Enter Stock Symbol or Special Keyword:</label>
+                   <div class="flex space-x-4">
+                       <input type="text" 
+                              id="symbol" 
+                              name="symbol" 
+                              value="{{ search_params.symbol }}"
+                              class="form-input rounded-md border-gray-300 shadow-sm w-full"
+                              placeholder="NASDAQ:AAPL or special keyword">
+                       <button type="submit" class="px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600">
+                           Search
+                       </button>
+                       <a href="{{ url_for('news.search') }}" 
+                          class="px-4 py-2 bg-gray-200 text-gray-700 rounded-md hover:bg-gray-300 transition-colors">
+                           New Search
+                       </a>
+                       {% if search_params.symbol %}
+                       <div class="flex justify-center space-x-4 mt-4">
+                           <button type="button" 
+                                   onclick="analyzeStock('{{ search_params.symbol }}')"
+                                   class="px-4 py-2 bg-green-500 text-white rounded-md hover:bg-green-600 transition-colors"
+                                   id="analyze-btn-{{ search_params.symbol }}">
+                               <span class="analyze-text">Analyze</span>
+                               <span class="analyzing-text hidden">
+                                   <svg class="animate-spin -ml-1 mr-2 h-4 w-4 text-white inline" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                       <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                       <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                   </svg>
+                                   Analyzing...
+                               </span>
+                           </button>
+                       </div>
+                       {% endif %}
+                   </div>
+               </div>
+               
+               <!-- Special keywords helper -->
+               <div class="text-sm text-gray-600">
+                   <p>Special keywords:</p>
+                   <ul class="list-disc list-inside ml-4">
+                       <li><strong>latest</strong> - Most recent articles</li>
+                       <li><strong>highest</strong> - Highest sentiment rated articles</li>
+                       <li><strong>lowest</strong> - Lowest sentiment rated articles</li>
+                       <li><strong>china</strong> - Latest news for Chinese companies</li>
+                       <li><strong>us</strong> - Latest news for US companies</li>
+                       <li><strong>hk</strong> - Latest news for Hong Kong companies</li>
+                       <li><strong>other</strong> - Latest news for other market companies</li>
+                   </ul>
+               </div>
+           </form>
+       </div>
+
+       <div id="resultsCount" class="text-lg text-gray-600 mb-4">
+           {% if articles and articles.total > 0 %}
+               Showing {{ (articles.page - 1) * 1 + 1 }}-{{ min(articles.page * 1, articles.total) }} 
+               of {{ articles.total }} articles
+           {% elif search_params.symbol %}
+               No articles found for "{{ search_params.symbol }}"
+           {% endif %}
+       </div>
+
+       <div id="articlesContainer" class="space-y-6">
+           {% if articles and articles.items %}
+               {% for article in articles.items %}
+               <div class="border rounded-lg p-4 shadow-sm hover:shadow-md transition-shadow">
+                   <a href="{{ article.url }}" target="_blank" 
+                      class="block text-blue-500 text-lg font-medium mb-2 hover:text-blue-600">
+                       {{ article.title }}
+                   </a>
+                   
+                   <div class="text-gray-500 mb-2">
+                       Published: {{ article.published_at.strftime('%Y-%m-%d %H:%M:%S') }}
+                       {% if article.symbols %}
+                       <div class="mt-1">
+                           Related Symbols: 
+                           {% for symbol in article.symbols %}
+                           <span class="bg-gray-100 px-2 py-1 rounded text-sm">
+                               <a href="{{ url_for('news.search', symbol=symbol.symbol) }}" 
+                                  class="text-blue-500 hover:text-blue-700">
+                                   {{ symbol.symbol }}
+                               </a>
+                           </span>
+                           {% endfor %}
+                       </div>
+                       {% endif %}
+                   </div>
+
+                   <div class="article-content mb-4">
+                       {% if article.ai_summary %}
+                       <div class="ai-summary">
+                           <span class="px-4 py-2 mt-4 mb-4 rounded-full text-sm font-medium bg-blue-100 text-blue-800 inline-block">
+                               AI Summary
+                           </span>
+                           <div class="markdown-content">
+                               {{ article.ai_summary|markdown|safe }}
+                           </div>
+                       </div>
+                       {% endif %}
+                       
+                       {% if article.ai_insights %}
+                       <div class="ai-insights">
+                           <span class="px-4 py-2 mt-4 mb-4 rounded-full text-sm font-medium bg-purple-100 text-purple-800 inline-block">
+                               AI Insights
+                           </span>
+                           <div class="markdown-content">
+                               {{ article.ai_insights|markdown|safe }}
+                           </div>
+                       </div>
+                       {% endif %}
+                   </div>
+
+                   {% if article.ai_sentiment_rating is not none %}
+                   <div class="text-sm text-gray-500 mt-4 border-t pt-4">
+                       <span class="px-4 py-2 mb-4 rounded-full text-sm font-medium 
+                           {% if article.ai_sentiment_rating > 50 %}bg-green-100 text-green-800
+                           {% elif article.ai_sentiment_rating < -50 %}bg-red-100 text-red-800
+                           {% else %}bg-yellow-100 text-yellow-800{% endif %}">
+                           AI Sentiment Rating: {{ article.ai_sentiment_rating }}
+                       </span>
+                   </div>
+                   {% endif %}
+               </div>
+               {% endfor %}
+
+               {% if articles.pages > 1 %}
+               <div class="flex justify-center space-x-2 mt-6">
+                   {% if articles.has_prev %}
+                   <a href="{{ url_for('news.search', page=articles.prev_num, symbol=search_params.symbol) }}"
+                      class="px-3 py-1 border rounded hover:bg-gray-100">Previous</a>
+                   {% endif %}
+
+                   {% for page_num in articles.iter_pages(left_edge=2, left_current=2, right_current=2, right_edge=2) %}
+                       {% if page_num %}
+                           {% if page_num == articles.page %}
+                           <span class="px-3 py-1 border rounded bg-blue-500 text-white">
+                               {{ page_num }}
+                           </span>
+                           {% else %}
+                           <a href="{{ url_for('news.search', page=page_num, symbol=search_params.symbol) }}"
+                              class="px-3 py-1 border rounded hover:bg-gray-100">
+                               {{ page_num }}
+                           </a>
+                           {% endif %}
+                       {% else %}
+                           <span class="px-3 py-1">…</span>
+                       {% endif %}
+                   {% endfor %}
+
+                   {% if articles.has_next %}
+                   <a href="{{ url_for('news.search', page=articles.next_num, symbol=search_params.symbol) }}"
+                      class="px-3 py-1 border rounded hover:bg-gray-100">Next</a>
+                   {% endif %}
+               </div>
+               {% endif %}
+           {% endif %}
+       </div>
+   </div>
+
+   <script>
+       document.addEventListener('DOMContentLoaded', () => {
+           const searchForm = document.getElementById('searchForm');
+           const symbolInput = document.getElementById('symbol');
+           const articlesContainer = document.getElementById('articlesContainer');
+           const resultsCount = document.getElementById('resultsCount');
+
+           searchForm.addEventListener('submit', async (e) => {
+               e.preventDefault();
+               
+               const symbol = symbolInput.value.trim();
+               if (!symbol) {
+                   alert('Please enter a stock symbol or one of: latest, highest, lowest');
+                   return;
+               }
+
+               try {
+                   const params = new URLSearchParams({ symbol });
+                   window.location.href = `/news/search?${params.toString()}`;
+               } catch (error) {
+                   console.error('Search error:', error);
+                   alert('Failed to search news: ' + error.message);
+               }
+           });
+       });
+
+       function getSentimentClass(rating) {
+           if (rating > 50) return 'bg-green-100 text-green-800';
+           if (rating < -50) return 'bg-red-100 text-red-800';
+           return 'bg-yellow-100 text-yellow-800';
+       }
+
+       function analyzeStock(symbol) {
+           // Get button elements
+           const button = document.getElementById(`analyze-btn-${symbol}`);
+           const analyzeText = button.querySelector('.analyze-text');
+           const analyzingText = button.querySelector('.analyzing-text');
+           
+           // Show analyzing state
+           analyzeText.classList.add('hidden');
+           analyzingText.classList.remove('hidden');
+           button.disabled = true;
+           
+           // Convert input symbol to Yahoo Finance format
+           let yahooSymbol = symbol;
+           
+           // Remove any exchange prefixes like NASDAQ:, NYSE:, etc.
+           if (symbol.includes(':')) {
+               const parts = symbol.split(':');
+               const exchange = parts[0].toUpperCase();
+               const ticker = parts[1];
+               
+               // Handle different exchanges
+               switch (exchange) {
+                   case '^':
+                       // Convert index symbols
+                       switch (ticker) {
+                           case 'HSI': yahooSymbol = 'TVC:HSI'; break;
+                           case 'GSPC': yahooSymbol = 'TVC:SPX'; break;
+                           case 'DJI': yahooSymbol = 'TVC:DJI'; break;
+                           case 'IXIC': yahooSymbol = 'TVC:NDX'; break;
+                           case 'N225': yahooSymbol = 'TVC:NI225'; break;
+                           case 'FTSE': yahooSymbol = 'TVC:UKX'; break;
+                           case 'GOLD': yahooSymbol = 'GC=F'; break;
+                           case 'SILVER': yahooSymbol = 'SI=F'; break;
+                           case 'COPPER': yahooSymbol = 'HG=F'; break;
+                           default: yahooSymbol = 'TVC:' + ticker;
+                       }
+                       break;
+                   case 'HKEX':
+                       // Convert HKEX:700 to 0700.HK
+                       yahooSymbol = ticker.padStart(4, '0') + '.HK';
+                       break;
+                   case 'SSE':
+                       // Shanghai Stock Exchange
+                       yahooSymbol = ticker + '.SS';
+                       break;
+                   case 'SZSE':
+                       // Shenzhen Stock Exchange
+                       yahooSymbol = ticker + '.SZ';
+                       break;
+                   case 'TSE':
+                       // Tokyo Stock Exchange
+                       yahooSymbol = ticker + '.T';
+                       break;
+                   case 'LSE':
+                       // London Stock Exchange
+                       yahooSymbol = ticker + '.L';
+                       break;
+                   case 'FOREXCOM':
+                       // Handle Forex pairs
+                       if (ticker.startsWith('US')) {
+                           yahooSymbol = '^' + ticker.substring(2);
+                       } else {
+                           yahooSymbol = ticker + '=X';
+                       }
+                       break;
+                   case 'TVC':
+                       // Handle TradingView symbols
+                       switch (ticker) {
+                           case 'GOLD': yahooSymbol = 'GC=F'; break;
+                           case 'SILVER': yahooSymbol = 'SI=F'; break;
+                           case 'COPPER': yahooSymbol = 'HG=F'; break;
+                           case 'USOIL': yahooSymbol = 'CL=F'; break;
+                           case 'DXY': yahooSymbol = 'DX-Y.NYB'; break;
+                           default: yahooSymbol = ticker;
+                       }
+                       break;
+                   case 'SP':
+                       yahooSymbol = '^GSPC';
+                       break;
+                   case 'DJ':
+                       yahooSymbol = '^DJI';
+                       break;
+                   case 'NASDAQ':
+                       if (ticker === 'IXIC') {
+                           yahooSymbol = '^IXIC';
+                       } else {
+                           yahooSymbol = ticker;
+                       }
+                       break;
+                   case 'NYSE':
+                       if (ticker === 'NYA') {
+                           yahooSymbol = '^NYA';
+                       } else {
+                           yahooSymbol = ticker;
+                       }
+                       break;
+                   case 'AMEX':
+                       if (ticker === 'IWM') {
+                           yahooSymbol = 'IWM';
+                       } else {
+                           yahooSymbol = ticker;
+                       }
+                       break;
+                   case 'BITSTAMP':
+                       yahooSymbol = ticker;
+                       break;
+                   case 'COMEX':
+                       // Handle COMEX futures
+                       switch (ticker) {
+                           case 'GC': yahooSymbol = 'GC=F'; break;
+                           case 'SI': yahooSymbol = 'SI=F'; break;
+                           case 'HG': yahooSymbol = 'HG=F'; break;
+                           default: yahooSymbol = ticker + '=F';
+                       }
+                       break;
+                   case 'NYMEX':
+                       // Convert futures
+                       if (ticker.endsWith('1!')) {
+                           yahooSymbol = ticker.replace('1!', '=F');
+                       } else {
+                           yahooSymbol = ticker + '=F';
+                       }
+                       break;
+                   default:
+                       yahooSymbol = ticker;
+               }
+           } else {
+               // Handle index symbols without exchange prefix
+               if (symbol.startsWith('^')) {
+                   const ticker = symbol.substring(1);
+                   switch (ticker) {
+                       case 'HSI': yahooSymbol = 'TVC:HSI'; break;
+                       case 'GSPC': yahooSymbol = 'TVC:SPX'; break;
+                       case 'DJI': yahooSymbol = 'TVC:DJI'; break;
+                       case 'IXIC': yahooSymbol = 'TVC:NDX'; break;
+                       case 'N225': yahooSymbol = 'TVC:NI225'; break;
+                       case 'FTSE': yahooSymbol = 'TVC:UKX'; break;
+                       case 'GOLD': yahooSymbol = 'GC=F'; break;
+                       case 'SILVER': yahooSymbol = 'SI=F'; break;
+                       case 'COPPER': yahooSymbol = 'HG=F'; break;
+                       default: yahooSymbol = 'TVC:' + ticker;
+                   }
+               }
+               // Handle special cases for currencies
+               const currencyMappings = {
+                   'EURUSD': 'EUR=X',
+                   'GBPUSD': 'GBP=X',
+                   'USDJPY': 'JPY=X',
+                   'USDCNY': 'CNY=X',
+                   'USDHKD': 'HKD=X',
+                   'USDCNH': 'CNH=X'
+               };
+
+               // Check mappings
+               if (currencyMappings[yahooSymbol]) {
+                   yahooSymbol = currencyMappings[yahooSymbol];
+               }
+               // Handle Hong Kong stocks (4 digits)
+               else if (/^\d{4}$/.test(yahooSymbol)) {
+                   yahooSymbol = yahooSymbol + '.HK';
+               }
+               // Handle Shanghai stocks
+               else if (/^(60|68|51|56|58)\d{4}$/.test(yahooSymbol)) {
+                   yahooSymbol = yahooSymbol + '.SS';
+               }
+               // Handle Shenzhen stocks
+               else if (/^(00|30)\d{4}$/.test(yahooSymbol)) {
+                   yahooSymbol = yahooSymbol + '.SZ';
+               }
+               // Handle Tokyo stocks
+               else if (/^\d{4}$/.test(yahooSymbol)) {
+                   yahooSymbol = yahooSymbol + '.T';
+               }
+           }
+
+           // Create form data with converted symbol
+           const formData = new FormData();
+           formData.append('ticker', yahooSymbol);
+
+           // Submit POST request to analyze endpoint
+           fetch('/analyze', {
+               method: 'POST',
+               body: formData
+           })
+           .then(response => {
+               if (response.ok) {
+                   return response.text();
+               }
+               throw new Error('Network response was not ok');
+           })
+           .then(html => {
+               // Open the analysis in a new window/tab
+               const analysisWindow = window.open('', '_blank');
+               analysisWindow.document.write(html);
+               analysisWindow.document.close();
+           })
+           .catch(error => {
+               console.error('Error:', error);
+               alert('Failed to analyze stock: ' + error.message);
+               // Reset button state on error
+               analyzeText.classList.remove('hidden');
+               analyzingText.classList.add('hidden');
+               button.disabled = false;
+           });
+       }
+   </script>
+</body>
+</html>

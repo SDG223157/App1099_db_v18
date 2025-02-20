@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fetch News</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <style>
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3498db;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="bg-gray-100">
+    <div class="container mx-auto p-4">
+        <div class="flex justify-between items-center mb-6">
+            <h1 class="text-2xl font-bold">Fetch News</h1>
+            <a href="{{ url_for('main.index') }}" 
+               class="bg-gray-500 text-white px-4 py-2 rounded hover:bg-gray-600 transition-colors">
+                Home
+            </a>
+        </div>
+
+        <div class="bg-white p-6 rounded-lg shadow-md mb-6">
+            <form id="fetchForm" class="space-y-4">
+                <div>
+                    <label for="symbol" class="block text-sm font-medium text-gray-700">Stock Symbol</label>
+                    <input type="text" id="symbol" name="symbol" placeholder="e.g., AAPL" 
+                           class="mt-1 block w-full p-2 border border-gray-300 rounded-md">
+                </div>
+                <div class="flex space-x-4">
+                    <button type="submit" id="fetchButton" class="flex-1 bg-blue-500 text-white p-2 rounded-md hover:bg-blue-600">
+                        Fetch Single Symbol
+                    </button>
+                    <button type="button" id="batchFetchButton" class="flex-1 bg-green-500 text-white p-2 rounded-md hover:bg-green-600">
+                        Fetch Top 100
+                    </button>
+                    <button type="button" id="updateAiSummaryButton" class="flex-1 bg-purple-500 text-white p-2 rounded-md hover:bg-purple-600">
+                        Update AI Summaries
+                    </button>
+                </div>
+            </form>
+        </div>
+
+        <div id="loadingIndicator" class="hidden text-center py-4">
+            <div class="spinner"></div>
+            <p class="text-gray-600">Fetching news...</p>
+            <p id="articlesToUpdate" class="text-gray-600"></p> <!-- New element to show the number of articles to be updated -->
+        </div>
+
+        <div id="searchResults" class="bg-white p-6 rounded-lg shadow-md">
+            <p id="resultsCount" class="text-sm text-gray-600 mb-4">0 articles found</p>
+            <div id="articlesContainer"></div>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const fetchButton = document.getElementById('fetchButton');
+            const batchFetchButton = document.getElementById('batchFetchButton');
+            const updateAiSummaryButton = document.getElementById('updateAiSummaryButton');
+            const loadingIndicator = document.getElementById('loadingIndicator');
+            const symbolInput = document.getElementById('symbol');
+            const articlesContainer = document.getElementById('articlesContainer');
+            const resultsCount = document.getElementById('resultsCount');
+            const articlesToUpdate = document.getElementById('articlesToUpdate'); // New element reference
+            
+            const DEFAULT_SYMBOLS = [ 
+                "SP:SPX", "DJ:DJI", "NASDAQ:IXIC", "NYSE:NYA", "AMEX:IWM",
+                "FOREXCOM:US30", "FOREXCOM:US500", "FOREXCOM:US100", "FOREXCOM:USSMALL", "FOREXCOM:US2000",
+                "LSE:UKX", "LSE:FTSE", "XETR:DAX", "EURONEXT:CAC40", "EURONEXT:AEX", "TVC:HSI", 
+                "TSE:NI225", "HKEX:HSI", "SZSE:399300", "ASX:XJO", "TSX:TSX",
+                "BITSTAMP:BTCUSD", "COMEX:GC1!","TVC:GOLD","FXCM:GOLD","TVC:USOIL","FXCM:OIL","TVC:SILVER",
+                 "NYMEX:CL1!", "COMEX:HG1!", "AMEX:TLT",
+                "TVC:DXY", "FOREXCOM:EURUSD", "FOREXCOM:GBPUSD", "FOREXCOM:USDJPY", "FOREXCOM:USDCNH",
+                "LSE:SHEL", "NYSE:TSM", "LSE:AZN", "TSE:7203", "NYSE:ASML",
+                "TSE:6758", "TSE:6861", "LSE:HSBA", "TSE:7974", "NYSE:UL",
+                "TSE:8306", "LSE:GSK", "NYSE:BP", "TSE:9432", "TSE:9984",
+                "NYSE:RY", "LSE:RIO", "NYSE:BHP", "NYSE:TD", "NYSE:NVO",
+                "TSE:8316", "NYSE:TTE", "NYSE:BTI", "NYSE:DEO", "TSE:8035",
+                "NYSE:SAP", "NYSE:SAN", "TSE:6501", "NYSE:EADSY", "TSE:6902",
+                "NYSE:PHG", "TSE:7267", "NYSE:SONY", "TSE:6367", "NYSE:VALE",
+                "TSE:6503", "NYSE:ING", "NYSE:HSBC", "NYSE:BBD", "TSE:7751",
+                "NYSE:SNY", "TSE:8766", "NYSE:SLB", "NYSE:NGG", "TSE:6702",
+                "NYSE:BMO", "NYSE:BCS", "NYSE:PTR", "NYSE:CS", "NYSE:UBS",
+                "NASDAQ:AAPL", "NASDAQ:MSFT", "NASDAQ:GOOGL", "NASDAQ:GOOG", "NASDAQ:AMZN",
+                "NASDAQ:NVDA", "NASDAQ:META", "NASDAQ:TSLA", "NASDAQ:AVGO", "NASDAQ:ADBE",
+                "NASDAQ:CSCO", "NASDAQ:NFLX", "NASDAQ:INTC", "NASDAQ:AMD", "NASDAQ:QCOM",
+                "NYSE:CRM", "NYSE:BRK.A", "NYSE:V", "NYSE:MA", "NYSE:JPM",
+                "NYSE:BAC", "NYSE:WFC", "NYSE:MS", "NYSE:GS", "NYSE:BLK",
+                "NYSE:AXP", "NYSE:UNH", "NYSE:JNJ", "NYSE:LLY", "NYSE:PFE",
+                "NYSE:MRK", "NYSE:ABT", "NYSE:TMO", "NYSE:DHR", "NYSE:BMY",
+                "NYSE:ABBV", "NYSE:WMT", "NYSE:PG", "NYSE:KO", "NASDAQ:PEP",
+                "NYSE:COST", "NYSE:MCD", "NYSE:NKE", "NYSE:DIS", "NASDAQ:CMCSA",
+                "NYSE:HD", "NYSE:XOM", "NYSE:CVX", "NYSE:RTX", "NYSE:HON",
+                "NYSE:UPS", "NYSE:CAT", "NYSE:GE", "NYSE:BA", "NYSE:LMT",
+                "NYSE:MMM", "NYSE:T", "NYSE:VZ", "NASDAQ:TMUS", "NYSE:SQ",
+                "NASDAQ:PYPL", "NYSE:SHOP", "NYSE:NOW", "NASDAQ:INTU", "NYSE:ORCL",
+                "NASDAQ:WDAY", "NASDAQ:AMAT", "NASDAQ:MU", "NASDAQ:KLAC", "NASDAQ:LRCX",
+                "NYSE:UBER", "NYSE:DASH", "NYSE:ABNB", "NYSE:PGR", "NYSE:MET",
+                "NYSE:ALL", "NYSE:PLD", "NYSE:AMT", "NYSE:CCI", "NYSE:LIN",
+                "NYSE:APD", "NYSE:ECL", "NYSE:NOC", "NYSE:GD", "NYSE:TDG",
+                "NYSE:TGT", "NYSE:LOW", "NYSE:DG", "NASDAQ:EA", "NASDAQ:ATVI",
+                "NYSE:SPOT", "NYSE:UNP", "NYSE:CSX", "NSE:FDX", "NYSE:VEEV",
+                "NYSE:ZTS", "NASDAQ:ISRG", "NYSE:EL", "NYSE:CL", "NYSE:K",
+                "NYSE:ACN", "NYSE:ADP", "NYSE:INFO", "NASDAQ:VRTX", "NASDAQ:REGN",
+                "NASDAQ:GILD", "NYSE:NEE", "NYSE:DUK", "NYSE:SO",
+                "HKEX:700", "HKEX:9988", "HKEX:1299", "HKEX:941", "HKEX:388",
+                "HKEX:5", "HKEX:3690", "HKEX:2318", "HKEX:2628", "HKEX:1211",
+                "HKEX:1810", "HKEX:2382", "HKEX:1024", "HKEX:9618", "HKEX:2269",
+                "HKEX:2018", "HKEX:2020", "HKEX:1177", "HKEX:1928", "HKEX:883",
+                "HKEX:1088", "HKEX:857", "HKEX:386", "HKEX:1", "HKEX:16",
+                "HKEX:11", "HKEX:2", "HKEX:3", "HKEX:6", "HKEX:12",
+                "HKEX:17", "HKEX:19", "HKEX:66", "HKEX:83", "HKEX:101",
+                "HKEX:135", "HKEX:151", "HKEX:175", "HKEX:267", "HKEX:288",
+                "HKEX:291", "HKEX:293", "HKEX:330", "HKEX:392", "HKEX:688",
+                "HKEX:762", "HKEX:823", "HKEX:960", "HKEX:1038", "HKEX:1109",
+                "SSE:600519", "SZSE:300750", "SZSE:000858", "SSE:601318", "SSE:600036",
+                "SSE:601012", "SZSE:000333", "SZSE:000651", "SSE:600276", "SSE:601888",
+                "SSE:603288", "SSE:603259", "SZSE:002594", "SSE:600104", "SSE:601166",
+                "SSE:601658", "SSE:600887", "SZSE:000725", "SSE:601919", "SSE:600030",
+                "SZSE:000001", "SZSE:300760", "SSE:601628", "SSE:600000", "SSE:600906",
+                "SSE:601138", "SSE:600028", "SSE:601857", "SZSE:002352", "SZSE:002475",
+                "SZSE:002415", "SSE:601899", "SSE:601375", "SSE:601668", "SSE:601766",
+                "SSE:603501", "SSE:600570", "SSE:601728", "SZSE:002027", "SSE:600585",
+                "SZSE:300059", "SSE:600018", "SSE:601211", "SZSE:000100", "SSE:600745",
+                "SSE:601633", "SSE:601688", "SZSE:300122", "SSE:600029", "SSE:600016",
+                "SSE:601398", "SSE:601288", "SSE:601988", "SSE:601328", "SSE:601998",
+                "SZSE:000063", "SSE:601139", "SSE:600438", "SSE:600031", "SZSE:002311",
+                "SSE:600584", "SZSE:300124", "SZSE:002024", "SZSE:002230", "SZSE:002241",
+                "SZSE:300015", "SSE:600436", "SSE:601601", "SSE:600015", "SSE:601696",
+                "SSE:601618", "SZSE:002013", "SZSE:000738", "SSE:600050", "SSE:600918",
+                "SZSE:000776", "SSE:600845", "SSE:603345", "SSE:601877", "SSE:600171",
+                "SSE:601818", "SSE:601390", "SSE:601186", "SSE:601088", "SSE:600062",
+                "SSE:600958", "SSE:601901", "SZSE:000069", "SSE:601607", "SSE:601360",
+                "SZSE:000625", "SSE:601225", "SSE:600999", "SSE:600837", "SSE:600660",
+                "SSE:600690", "SSE:601336", "SSE:601066", "SSE:601995", "SSE:600919"
+            ];
+
+            const renderArticles = (articles) => {
+                if (articles && articles.length > 0) {
+                    resultsCount.textContent = `${articles.length} articles found`;
+                    articlesContainer.innerHTML = articles
+                        .map(article => {
+                            const publishedDate = article.published_at ? 
+                                new Date(article.published_at).toLocaleDateString() : 'Date not available';
+                            
+                            const relatedSymbols = article.symbols?.map(s => 
+                                `<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800 mr-1">
+                                    ${s.symbol}
+                                </span>`
+                            ).join('') || '';
+
+                            return `
+                                <div class="article-card border-b border-gray-200 pb-6 mb-4">
+                                    <h3 class="text-lg font-medium text-gray-900">
+                                        <a href="${article.url}" target="_blank" class="text-blue-600 hover:text-blue-800">
+                                            ${article.title}
+                                        </a>
+                                    </h3>
+                                    <p class="text-sm text-gray-500">Published on: ${publishedDate}</p>
+                                    <p class="text-gray-600 mt-2">${article.summary.key_points || ''}</p>
+                                    
+                                    <!-- AI Summary -->
+                                    <div class="mt-2">
+                                        <p class="text-gray-600">${article.summary.ai_summary || ''}</p>
+                                    </div>
+                                    
+                                    <!-- AI Insights -->
+                                    <div class="text-gray-600 mb-2">
+                                        ${article.summary.ai_insights || ''}
+                                    </div>
+
+                                    <!-- AI Sentiment Rating -->
+                                    ${article.summary.ai_sentiment_rating != null ? 
+                                        `<div class="mt-2 flex items-center space-x-2">
+                                            <span class="inline-flex items-center px-2.5 py-1.5 rounded-full text-sm font-medium ${
+                                                article.summary.ai_sentiment_rating > 50 ? 'bg-green-200 text-green-900 border border-green-300' :
+                                                article.summary.ai_sentiment_rating > 10 ? 'bg-green-100 text-green-800 border border-green-200' :
+                                                article.summary.ai_sentiment_rating >= -10 ? 'bg-gray-100 text-gray-800 border border-gray-200' :
+                                                article.summary.ai_sentiment_rating >= -50 ? 'bg-red-100 text-red-800 border border-red-200' :
+                                                'bg-red-200 text-red-900 border border-red-300'
+                                            }">
+                                                ${article.summary.ai_sentiment_rating > 50 ? 'Strong Positive' :
+                                                  article.summary.ai_sentiment_rating > 10 ? 'Positive' :
+                                                  article.summary.ai_sentiment_rating >= -10 ? 'Neutral' :
+                                                  article.summary.ai_sentiment_rating >= -50 ? 'Negative' :
+                                                  'Strong Negative'}
+                                                (${article.summary.ai_sentiment_rating})
+                                            </span>
+                                        </div>` : ''
+                                    }
+
+                                    <div class="mt-2 flex flex-wrap gap-1">
+                                        <span class="text-sm text-gray-600 mr-2">Related Symbols:</span>
+                                        ${relatedSymbols || 'None'}
+                                    </div>
+                                </div>
+                            `;
+                        })
+                        .join('');
+                } else {
+                    articlesContainer.innerHTML = '<p class="text-gray-600">No articles found.</p>';
+                }
+            };
+
+            const fetchNews = async (symbol) => {
+                try {
+                    loadingIndicator.classList.remove('hidden');
+                    fetchButton.disabled = true;
+
+                    const response = await fetch('/news/api/fetch', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            symbols: [symbol],
+                            limit: 10
+                        })
+                    });
+
+                    if (!response.ok) throw new Error(`Error: ${response.status}`);
+                    const data = await response.json();
+                    renderArticles(data.articles);
+
+                } catch (error) {
+                    console.error('Fetch error:', error);
+                    alert('Failed to fetch news');
+                } finally {
+                    loadingIndicator.classList.add('hidden');
+                    fetchButton.disabled = false;
+                }
+            };
+
+            const batchFetch = async () => {
+                try {
+                    loadingIndicator.classList.remove('hidden');
+                    batchFetchButton.disabled = true;
+                    function shuffle(array) {
+                        const newArray = [...array];
+                        for (let i = newArray.length - 1; i > 0; i--) {
+                            const j = Math.floor(Math.random() * (i + 1));
+                            [newArray[i], newArray[j]] = [newArray[j], newArray[i]];
+                        }
+                        return newArray;
+                    }
+
+                    const selectedSymbols = shuffle(DEFAULT_SYMBOLS);
+                    
+                    const progressDiv = document.createElement('div');
+                    progressDiv.innerHTML = `
+                        <div class="mt-4 mb-2">
+                            <div class="w-full bg-gray-200 rounded-full h-2.5">
+                                <div id="progressBar" class="bg-green-600 h-2.5 rounded-full transition-all duration-300" style="width: 0%"></div>
+                            </div>
+                            <p id="progressText" class="text-sm text-gray-600 mt-1">Processing: 0/${DEFAULT_SYMBOLS.length} symbols</p>
+                        </div>
+                    `;
+                    loadingIndicator.appendChild(progressDiv);
+
+                    let allArticles = [];
+                    for (let i = 0; i < selectedSymbols.length; i++) {
+                        const response = await fetch('/news/api/fetch', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify({
+                                symbols: [selectedSymbols[i]],
+                                limit: 2
+                            })
+                        });
+
+                        if (!response.ok) throw new Error(`Error: ${response.status}`);
+                        const data = await response.json();
+                        allArticles = allArticles.concat(data.articles || []);
+
+                        const progress = ((i + 1) / DEFAULT_SYMBOLS.length) * 100;
+                        document.getElementById('progressBar').style.width = `${progress}%`;
+                        document.getElementById('progressText').textContent = 
+                            `Processing: ${i + 1}/${selectedSymbols.length} - Current Symbol: ${selectedSymbols[i]}`;
+                    
+                    }
+
+                    renderArticles(allArticles);
+
+                } catch (error) {
+                    console.error('Batch fetch error:', error);
+                    alert('Failed to fetch news');
+                } finally {
+                    loadingIndicator.classList.add('hidden');
+                    batchFetchButton.disabled = false;
+                    const progressDiv = loadingIndicator.querySelector('div');
+                    if (progressDiv) {
+                        loadingIndicator.removeChild(progressDiv);
+                    }
+                }
+            };
+
+            const updateAiSummaries = async () => {
+                try {
+                    updateAiSummaryButton.disabled = true;
+                    loadingIndicator.classList.remove('hidden');
+                    loadingIndicator.querySelector('p').textContent = 'Updating AI summaries...';
+
+                    // Fetch the number of articles to be updated
+                    const response = await fetch('/news/api/get-articles-to-update', {
+                        method: 'GET'
+                    });
+
+                    if (!response.ok) throw new Error(`Error: ${response.status}`);
+                    const data = await response.json();
+
+                    // Display the number of articles to be updated
+                    articlesToUpdate.textContent = `${data.count} articles to be updated`;
+
+                    // Proceed with updating the summaries
+                    const updateResponse = await fetch('/news/api/update-summaries', {
+                        method: 'POST'
+                    });
+
+                    if (!updateResponse.ok) throw new Error(`Error: ${updateResponse.status}`);
+                    alert('AI summaries update completed');
+
+                } catch (error) {
+                    console.error('Update error:', error);
+                    alert('Failed to update AI summaries');
+                } finally {
+                    loadingIndicator.classList.add('hidden');
+                    loadingIndicator.querySelector('p').textContent = 'Fetching news...';
+                    updateAiSummaryButton.disabled = false;
+                }
+            };
+
+            fetchForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const symbol = symbolInput.value.trim();
+                if (!symbol) {
+                    alert('Please enter a stock symbol');
+                    return;
+                }
+                await fetchNews(symbol);
+            });
+
+            batchFetchButton.addEventListener('click', batchFetch);
+            updateAiSummaryButton.addEventListener('click', updateAiSummaries);
+        });
+    </script>
+</body>
+</html>

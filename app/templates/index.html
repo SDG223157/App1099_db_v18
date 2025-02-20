@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="form-container">
+    <form id="analyze-form" method="post" action="{{ url_for('main.analyze') if current_user.is_authenticated else url_for('main.quick_analyze') }}">
+        <div class="form-group">
+            <label for="ticker">Ticker Symbol:</label>
+            <div class="ticker-input-container">
+                <input 
+                    type="text" 
+                    id="ticker" 
+                    name="ticker" 
+                    placeholder="Enter symbol e.g. AAPL..."
+                    autocomplete="off"
+                    required
+                >
+                <div class="suggestions"></div>
+            </div>
+        </div>
+
+        {% if current_user.is_authenticated %}
+            <div class="form-group">
+                <label for="end_date">End Date:</label>
+                <input 
+                    type="date" 
+                    id="end_date" 
+                    name="end_date"
+                    max="{{ max_date }}"
+                    value="{{ max_date }}" 
+                >
+            </div>
+
+            <div class="form-group">
+                <label for="lookback_days">Lookback Period (days):</label>
+                <input 
+                    type="number" 
+                    id="lookback_days" 
+                    name="lookback_days"
+                    min="30"
+                    max="10000"
+                    value="365"
+                >
+            </div>
+
+            <div class="form-group">
+                <label for="crossover_days">Crossover Period (days):</label>
+                <input 
+                    type="number" 
+                    id="crossover_days" 
+                    name="crossover_days"
+                    min="30"
+                    max="1000"
+                    value="365"
+                >
+            </div>
+        {% endif %}
+
+        <button type="submit" class="analyze-button">
+            Analyze 
+        </button>
+    </form>
+</div>
+{% endblock %}
