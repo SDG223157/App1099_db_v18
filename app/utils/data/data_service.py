@@ -347,8 +347,13 @@ class DataService:
             cash_flow_data = data.get('Financials', {}).get('Cash_Flow', {}).get('yearly', {})
             
             # Process each year
+            current_year = datetime.now().year
             for year in range(int(start_year), int(end_year) + 1):
                 try:
+                    # Skip future years
+                    if year > current_year:
+                        continue
+
                     year_data = {
                         'fiscal_year': year,
                         'period_label': 'FY',
@@ -361,10 +366,12 @@ class DataService:
                             net_income = float(entry.get('netIncome', 0))
                             revenue = float(entry.get('totalRevenue', 0))
                             operating_income = float(entry.get('operatingIncome', 0))
-                            year_data['is_net_income'] = net_income
-                            year_data['is_sales_and_services_revenues'] = revenue
-                            if revenue > 0:
-                                year_data['oper_margin'] = float(f"{(operating_income / revenue * 100):.15f}")
+                            # Only store if we have actual data (non-zero values)
+                            if net_income != 0 or revenue != 0:
+                                year_data['is_net_income'] = net_income
+                                year_data['is_sales_and_services_revenues'] = revenue
+                                if revenue > 0:
+                                    year_data['oper_margin'] = float(f"{(operating_income / revenue * 100):.15f}")
                             break
 
                     # Get shares data
@@ -372,17 +379,21 @@ class DataService:
                         date = entry.get('dateFormatted')
                         if date and str(year) in date:
                             shares = float(entry.get('shares', 0))
-                            year_data['is_sh_for_diluted_eps'] = shares
-                            # Calculate EPS
-                            if shares > 0 and 'is_net_income' in year_data:
-                                year_data['eps'] = year_data['is_net_income'] / shares
+                            if shares > 0:  # Only store if we have actual data
+                                year_data['is_sh_for_diluted_eps'] = shares
+                                # Calculate EPS
+                                if 'is_net_income' in year_data:
+                                    year_data['eps'] = year_data['is_net_income'] / shares
                             break
 
                     # Get cash flow data
                     for date, entry in cash_flow_data.items():
                         if str(year) in date:
-                            year_data['cf_cash_from_oper'] = float(entry.get('totalCashFromOperatingActivities', 0))
-                            year_data['cf_cap_expenditures'] = float(entry.get('capitalExpenditures', 0))
+                            cf_oper = float(entry.get('totalCashFromOperatingActivities', 0))
+                            cap_ex = float(entry.get('capitalExpenditures', 0))
+                            if cf_oper != 0 or cap_ex != 0:  # Only store if we have actual data
+                                year_data['cf_cash_from_oper'] = cf_oper
+                                year_data['cf_cap_expenditures'] = cap_ex
                             break
 
                     # Get balance sheet data and calculate ROIC
@@ -395,11 +406,13 @@ class DataService:
                                 year_data['return_on_inv_capital'] = float(f"{(year_data['is_net_income'] / invested_capital * 100):.15f}")
                             break
 
-                    # Store the requested metric in values dict
+                    # Store the requested metric in values dict if it exists
                     if metric_field in year_data:
                         values[year] = year_data[metric_field]
 
-                    financial_data.append(year_data)
+                    # Only append year_data if it contains actual data
+                    if len(year_data) > 3:  # More than just fiscal_year, period_label, and period_end_date
+                        financial_data.append(year_data)
 
                 except Exception as e:
                     logger.error(f"Error processing data for {year}: {str(e)}")
