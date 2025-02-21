@@ -63,6 +63,10 @@ class DataService:
         self.METRICS = METRICS_MAP
         self.CAGR_METRICS = CAGR_METRICS
         
+        # Add EODHD configuration
+        self.EODHD_API_KEY = os.getenv('EODHD_API_KEY')
+        self.EODHD_BASE_URL = "https://eodhd.com"
+        
         # Database configuration
         self.engine = create_engine(
             f"mysql+pymysql://{os.getenv('MYSQL_USER')}:"
@@ -306,6 +310,11 @@ class DataService:
             try:
                 logger.info(f"Getting financial data for {ticker} from EODHD API")
                 
+                # Check if EODHD API key is configured
+                if not self.EODHD_API_KEY:
+                    logger.warning("EODHD API key not configured, skipping EODHD API")
+                    raise ValueError("EODHD API key not configured")
+                
                 # Convert ticker to EODHD format
                 eodhd_ticker = self.convert_to_eodhd_ticker(ticker)
                 if not eodhd_ticker:
@@ -314,8 +323,12 @@ class DataService:
                 
                 # Construct EODHD API URL
                 eodhd_url = f"{self.EODHD_BASE_URL}/api/v1/fundamentals/{eodhd_ticker}?api_token={self.EODHD_API_KEY}"
+                logger.debug(f"EODHD API URL: {eodhd_url}")
                 
                 response = requests.get(eodhd_url)
+                logger.debug(f"EODHD API Response status: {response.status_code}")
+                logger.debug(f"EODHD API Response content: {response.text[:200]}...")  # First 200 chars
+                
                 response.raise_for_status()
                 data = response.json()
                 
