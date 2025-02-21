@@ -345,9 +345,9 @@ class DataService:
                     'is_sales_and_services_revenues': ('Income_Statement', 'totalRevenue'),
                     'cf_cash_from_oper': ('Cash_Flow', 'totalCashFromOperatingActivities'),
                     'is_net_income': ('Income_Statement', 'netIncome'),
-                    'eps': ('Income_Statement', 'dilutedEPS'),
+                    'eps': ('Highlights', 'EPS'),
                     'cf_cap_expenditures': ('Cash_Flow', 'capitalExpenditures'),
-                    'is_sh_for_diluted_eps': ('Income_Statement', 'dilutedSharesWA')
+                    'is_sh_for_diluted_eps': ('Highlights', 'SharesOutstanding')
                 }
                 
                 if metric_field in eodhd_field_map:
@@ -656,11 +656,13 @@ class DataService:
                         'period_end_date': date
                     }
                     
-                    # Get Income Statement data
+                    # Get Income Statement and Highlights data
                     income_stmt = income_statements.get(date, {})
+                    highlights = data.get('Highlights', {})
+                    
                     year_data['is_sales_and_services_revenues'] = float(income_stmt.get('totalRevenue', 0))
                     year_data['is_net_income'] = float(income_stmt.get('netIncome', 0))
-                    year_data['eps'] = float(income_stmt.get('dilutedEPS', 0))
+                    year_data['eps'] = float(highlights.get('EPS', 0))
                     
                     # Calculate Operating Margin
                     operating_income = float(income_stmt.get('operatingIncome', 0))
@@ -679,7 +681,7 @@ class DataService:
                     year_data['return_on_inv_capital'] = float(f"{(operating_income / invested_capital * 100):.15f}") if invested_capital else 0.0
                     
                     # Get shares data
-                    year_data['is_sh_for_diluted_eps'] = float(income_stmt.get('dilutedSharesWA', 0))
+                    year_data['is_sh_for_diluted_eps'] = float(highlights.get('SharesOutstanding', 0))
                     
                     financial_data.append(year_data)
                 
