@@ -357,36 +357,36 @@ class DataService:
                 
                 if metric_field in ['eps', 'is_sh_for_diluted_eps']:
                     # Try different paths to find the data
-                    highlights = data.get('Financials', {}).get('Highlights', {})
-                    logger.debug(f"Full Highlights data: {highlights}")
-                    
-                    # Try both paths
-                    yearly_data = highlights.get('yearly', {})
-                    if not yearly_data:
-                        yearly_data = highlights  # Try direct access if 'yearly' doesn't exist
-                    
-                    logger.debug(f"Yearly data found: {yearly_data}")
-                    
                     values = {}
-                    for date, highlight_data in yearly_data.items():
-                        logger.debug(f"Processing date {date}: {highlight_data}")
-                        try:
-                            year = datetime.strptime(date, '%Y-%m-%d').year
-                            if int(start_year) <= year <= int(end_year):
-                                if metric_field == 'eps':
-                                    # Try multiple possible field names
-                                    value = (highlight_data.get('EPS') or 
-                                           highlight_data.get('eps') or 
-                                           highlight_data.get('DilutedEPS') or 
-                                           highlight_data.get('dilutedEPS') or 0)
-                                else:  # is_sh_for_diluted_eps
-                                    value = (highlight_data.get('SharesOutstanding') or 
-                                           highlight_data.get('sharesOutstanding') or 
-                                           highlight_data.get('Shares') or 
-                                           highlight_data.get('DilutedShares') or 0)
-                                values[year] = float(value)
-                        except Exception as e:
-                            logger.error(f"Error processing highlight data for {date}: {str(e)}")
+                    
+                    # First try General section
+                    if metric_field == 'eps':
+                        eps = data.get('General', {}).get('EPS', 0)
+                        if eps:
+                            current_year = datetime.now().year
+                            values[current_year] = float(eps)
+                    else:  # is_sh_for_diluted_eps
+                        shares = data.get('General', {}).get('SharesOutstanding', 0)
+                        if shares:
+                            current_year = datetime.now().year
+                            values[current_year] = float(shares)
+                    
+                    # Then try Financials section
+                    financials = data.get('Financials', {})
+                    if 'Income_Statement' in financials:
+                        yearly_data = financials['Income_Statement'].get('yearly', {})
+                        for date, stmt_data in yearly_data.items():
+                            try:
+                                year = datetime.strptime(date, '%Y-%m-%d').year
+                                if int(start_year) <= year <= int(end_year):
+                                    if metric_field == 'eps':
+                                        value = stmt_data.get('dilutedEPS', 0)
+                                    else:  # is_sh_for_diluted_eps
+                                        value = stmt_data.get('weightedAverageShsOutDil', 0)
+                                    if value:
+                                        values[year] = float(value)
+                            except Exception as e:
+                                logger.error(f"Error processing financial data for {date}: {str(e)}")
                     
                     if values:
                         series = pd.Series(values, name=metric_description)
@@ -700,20 +700,20 @@ class DataService:
                     
                     # Get Income Statement data
                     income_stmt = income_statements.get(date, {})
-                    # Get Highlights data for this specific year
-                    highlights = data.get('Financials', {}).get('Highlights', {})
-                    yearly_highlights = highlights.get('yearly', {}).get(date, {}) or highlights.get(date, {})
                     
-                    # Try multiple possible field names for EPS and Shares
-                    eps_value = (yearly_highlights.get('EPS') or 
-                                yearly_highlights.get('eps') or 
-                                yearly_highlights.get('DilutedEPS') or 
-                                yearly_highlights.get('dilutedEPS') or 0)
+                    # Try to get EPS and shares from multiple locations
+                    eps_value = 0
+                    shares_value = 0
                     
-                    shares_value = (yearly_highlights.get('SharesOutstanding') or 
-                                   yearly_highlights.get('sharesOutstanding') or 
-                                   yearly_highlights.get('Shares') or 
-                                   yearly_highlights.get('DilutedShares') or 0)
+                    # Try Income Statement first
+                    eps_value = income_stmt.get('dilutedEPS', 0)
+                    shares_value = income_stmt.get('weightedAverageShsOutDil', 0)
+                    
+                    # If not found, try General section
+                    if not eps_value and date == max(income_statements.keys()):  # Only for most recent year
+                        eps_value = data.get('General', {}).get('EPS', 0)
+                    if not shares_value and date == max(income_statements.keys()):
+                        shares_value = data.get('General', {}).get('SharesOutstanding', 0)
                     
                     year_data['is_sales_and_services_revenues'] = float(income_stmt.get('totalRevenue', 0))
                     year_data['is_net_income'] = float(income_stmt.get('netIncome', 0))
