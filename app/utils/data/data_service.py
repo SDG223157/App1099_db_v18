@@ -370,11 +370,15 @@ class DataService:
                         for entry in earnings_data:
                             try:
                                 date = entry.get('date')
-                                year = datetime.strptime(date, '%Y-%m-%d').year
-                                if int(start_year) <= year <= int(end_year):
-                                    eps = entry.get('epsActual', 0)
-                                    if eps:
-                                        values[year] = float(eps)
+                                if date:
+                                    year = datetime.strptime(date, '%Y-%m-%d').year
+                                    if int(start_year) <= year <= int(end_year):
+                                        eps = entry.get('epsActual', 0)
+                                        if eps is not None:  # Check for None since 0 is valid
+                                            # Sum up quarterly EPS for annual total
+                                            if year not in values:
+                                                values[year] = 0
+                                            values[year] += float(eps)
                             except Exception as e:
                                 logger.error(f"Error processing earnings data: {str(e)}")
                     else:  # is_sh_for_diluted_eps
