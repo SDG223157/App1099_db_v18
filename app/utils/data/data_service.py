@@ -376,8 +376,7 @@ class DataService:
 
                     # Get shares data
                     shares = None
-
-                    # First try Balance Sheet commonStock
+                    # Get shares from Balance Sheet commonStock
                     for date, entry in balance_data.items():
                         if str(year) in date:
                             common_stock = entry.get('commonStock')
@@ -388,27 +387,6 @@ class DataService:
                                     break
                                 except (ValueError, AttributeError):
                                     pass
-
-                    # If not found, try SharesStats
-                    if not shares:
-                        shares_stats = data.get('SharesStats', {})
-                        if shares_stats and shares_stats.get('SharesOutstanding'):
-                            shares = float(shares_stats.get('SharesOutstanding', 0))
-
-                    # If still not found, try outstandingShares data
-                    if not shares:
-                        for idx, entry in shares_data.items():
-                            date = entry.get('dateFormatted')
-                            if date and str(year) in date:
-                                shares = float(entry.get('shares', 0))
-                                break
-
-                    # If still not found, try Income Statement
-                    if not shares:
-                        for date, entry in income_data.items():
-                            if str(year) in date:
-                                shares = float(entry.get('weightedAverageShsOutDil', 0))
-                                break
 
                     if shares > 0 and 'is_net_income' in year_data:  # Only calculate EPS if we have both values
                         year_data['is_sh_for_diluted_eps'] = shares
@@ -664,8 +642,7 @@ class DataService:
                     
                     # Get shares data
                     shares = None
-
-                    # First try Balance Sheet commonStock
+                    # Get shares from Balance Sheet commonStock
                     for date, entry in balance_sheets.items():
                         if str(year) in date:
                             common_stock = entry.get('commonStock')
