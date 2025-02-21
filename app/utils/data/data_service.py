@@ -542,6 +542,9 @@ class DataService:
         - For non-US exchanges:
             - TSX: .TO -> .TSE (e.g., TD.TO -> TD.TSE)
             - LSE: .L -> .LSE (e.g., VOD.L -> VOD.LSE)
+            - HK: .HK -> .HK (e.g., 0700.HK -> 0700.HK)
+            - China SZ: .SZ -> .SZ (e.g., 000001.SZ -> 000001.SZ)
+            - China SH: .SS -> .SH (e.g., 600000.SS -> 600000.SH)
             - etc.
         """
         # Exchange mapping from Yahoo to EODHD
@@ -557,6 +560,8 @@ class DataService:
             'BR': 'BR',     # Brussels
             'ST': 'ST',     # Stockholm
             'HK': 'HK',     # Hong Kong
+            'SZ': 'SHE',     # Shenzhen
+            'SS': 'SHG',     # Shanghai (Yahoo uses SS, EODHD uses SH)
             'TW': 'TW',     # Taiwan
             'KS': 'KO',     # Korea
             'T': 'T',       # Tokyo
@@ -571,6 +576,14 @@ class DataService:
             return None
         if '-' in ticker or '=' in ticker:  # Special symbols
             return None
+        
+        # Handle Hong Kong stocks - ensure 4 digits with leading zeros
+        if len(parts) > 1 and parts[1] == 'HK':
+            base_ticker = base_ticker.zfill(4)
+        
+        # Handle China A-shares - ensure 6 digits with leading zeros
+        if len(parts) > 1 and parts[1] in ['SZ', 'SS']:
+            base_ticker = base_ticker.zfill(6)
         
         if len(parts) == 1:  # No exchange suffix
             return f"{base_ticker}.US"  # Assume US stock
