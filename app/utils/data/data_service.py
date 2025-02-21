@@ -343,11 +343,11 @@ class DataService:
                 # Map our metric fields to EODHD fields
                 eodhd_field_map = {
                     'is_sales_and_services_revenues': ('Income_Statement', 'totalRevenue'),
-                    'cf_cash_from_oper': ('Cash_Flow', 'operatingCashFlow'),
+                    'cf_cash_from_oper': ('Cash_Flow', 'totalCashFromOperatingActivities'),
                     'is_net_income': ('Income_Statement', 'netIncome'),
-                    'eps': ('Income_Statement', 'eps'),
+                    'eps': ('Income_Statement', 'dilutedEPS'),
                     'cf_cap_expenditures': ('Cash_Flow', 'capitalExpenditures'),
-                    'is_sh_for_diluted_eps': ('Income_Statement', 'weightedAverageShsOutDil')
+                    'is_sh_for_diluted_eps': ('Income_Statement', 'dilutedSharesWA')
                 }
                 
                 if metric_field in eodhd_field_map:
@@ -362,7 +362,9 @@ class DataService:
                             values[year] = value
                             
                     if values:
-                        return pd.Series(values, name=metric_description)
+                        # Create series and sort in descending order (most recent first)
+                        series = pd.Series(values, name=metric_description)
+                        return series.sort_index(ascending=False)
                     
                 # For calculated metrics (operating margin, ROIC)
                 elif metric_field == 'oper_margin':
@@ -376,7 +378,9 @@ class DataService:
                             margin = (operating_income / total_revenue * 100) if total_revenue else 0.0
                             values[year] = float(f"{margin:.15f}")
                     if values:
-                        return pd.Series(values, name=metric_description)
+                        # Create series and sort in descending order (most recent first)
+                        series = pd.Series(values, name=metric_description)
+                        return series.sort_index(ascending=False)
                     
                 elif metric_field == 'return_on_inv_capital':
                     income_stmts = data.get('Financials', {}).get('Income_Statement', {}).get('yearly', {})
@@ -394,7 +398,9 @@ class DataService:
                             roic = (operating_income / invested_capital * 100) if invested_capital else 0.0
                             values[year] = float(f"{roic:.15f}")
                     if values:
-                        return pd.Series(values, name=metric_description)
+                        # Create series and sort in descending order (most recent first)
+                        series = pd.Series(values, name=metric_description)
+                        return series.sort_index(ascending=False)
                 
                 raise ValueError(f"Could not get {metric_description} from EODHD")
                 
@@ -419,11 +425,13 @@ class DataService:
                     actual_years = set(filtered_df['fiscal_year'].values)
                     missing_years = requested_years - actual_years
                     
-                    return pd.Series(
+                    # Create series and sort in descending order (most recent first)
+                    series = pd.Series(
                             filtered_df[metric_field].values,
                             index=filtered_df['fiscal_year'],
                             name=metric_description
                         )
+                    return series.sort_index(ascending=False)
 
             # If not in database, store it first
             print(f"Data not found in database for {ticker}, fetching from API")
@@ -434,11 +442,13 @@ class DataService:
                 df['fiscal_year'] = df['fiscal_year'].astype(int)
                 mask = (df['fiscal_year'] >= int(start_year)) & (df['fiscal_year'] <= int(end_year))
                 filtered_df = df[mask]
-                return pd.Series(
+                # Create series and sort in descending order (most recent first)
+                series = pd.Series(
                     filtered_df[metric_field].values,
                     index=filtered_df['fiscal_year'],
                     name=metric_description
                 )
+                return series.sort_index(ascending=False)
             else:
                 return None
                 
@@ -650,7 +660,7 @@ class DataService:
                     income_stmt = income_statements.get(date, {})
                     year_data['is_sales_and_services_revenues'] = float(income_stmt.get('totalRevenue', 0))
                     year_data['is_net_income'] = float(income_stmt.get('netIncome', 0))
-                    year_data['eps'] = float(income_stmt.get('eps', 0))
+                    year_data['eps'] = float(income_stmt.get('dilutedEPS', 0))
                     
                     # Calculate Operating Margin
                     operating_income = float(income_stmt.get('operatingIncome', 0))
@@ -659,7 +669,7 @@ class DataService:
                     
                     # Get Cash Flow data
                     cash_flow = cash_flows.get(date, {})
-                    year_data['cf_cash_from_oper'] = float(cash_flow.get('operatingCashFlow', 0))
+                    year_data['cf_cash_from_oper'] = float(cash_flow.get('totalCashFromOperatingActivities', 0))
                     year_data['cf_cap_expenditures'] = float(cash_flow.get('capitalExpenditures', 0))
                     
                     # Get Balance Sheet data for ROIC calculation
@@ -669,7 +679,7 @@ class DataService:
                     year_data['return_on_inv_capital'] = float(f"{(operating_income / invested_capital * 100):.15f}") if invested_capital else 0.0
                     
                     # Get shares data
-                    year_data['is_sh_for_diluted_eps'] = float(income_stmt.get('weightedAverageShsOutDil', 0))
+                    year_data['is_sh_for_diluted_eps'] = float(income_stmt.get('dilutedSharesWA', 0))
                     
                     financial_data.append(year_data)
                 
@@ -699,8 +709,8 @@ class DataService:
                     if col not in df.columns:
                         df[col] = 0.0
                 
-                # Sort by fiscal year ascending
-                df = df.sort_values('fiscal_year', ascending=True)
+                # Sort by fiscal year descending (most recent first)
+                df = df.sort_values('fiscal_year', ascending=False)
                 df.reset_index(drop=True, inplace=True)
                 
                 # Reorder columns
@@ -830,8 +840,8 @@ class DataService:
                             continue
                         df[col] = 0.0
                 
-                # Sort by fiscal year ascending
-                df = df.sort_values('fiscal_year', ascending=True)
+                # Sort by fiscal year descending (most recent first)
+                df = df.sort_values('fiscal_year', ascending=False)
                 df.reset_index(drop=True, inplace=True)
                 
                 # Reorder columns
