@@ -225,11 +225,14 @@
            searchForm.addEventListener('submit', async (e) => {
                e.preventDefault();
                
-               const symbol = symbolInput.value.trim();
+               let symbol = symbolInput.value.trim();
                if (!symbol) {
                    alert('Please enter a stock symbol or one of: latest, highest, lowest');
                    return;
                }
+
+               // Convert hyphen to dot in stock symbols
+               symbol = symbol.replace(/-/g, '.');
 
                try {
                    const params = new URLSearchParams({ symbol });

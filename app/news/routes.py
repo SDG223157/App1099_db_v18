@@ -131,7 +131,10 @@ def search():
     symbol = request.args.get('symbol', '').strip().upper()
     if request.method == 'POST':
         symbol = request.form.get('symbol', '').strip().upper()
-        symbol = normalize_ticker(symbol, purpose='search')
+        
+    # Convert hyphen to dot in stock symbols (e.g., BRK-A to BRK.A)
+    symbol = symbol.replace('-', '.')
+    symbol = normalize_ticker(symbol, purpose='search')
 
     # Redirect if empty symbol parameter exists
     if 'symbol' in request.args and not symbol:
