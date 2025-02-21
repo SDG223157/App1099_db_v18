@@ -381,12 +381,8 @@ class DataService:
                         if str(year) in date:
                             common_stock = entry.get('commonStock')
                             if common_stock:
-                                try:
-                                    # Remove any '.00' suffix and convert to float
-                                    shares = float(common_stock.replace('.00', ''))
-                                    break
-                                except (ValueError, AttributeError):
-                                    pass
+                                shares = self.get_shares_from_common_stock(common_stock, ticker)
+                                break
 
                     if shares > 0 and 'is_net_income' in year_data:  # Only calculate EPS if we have both values
                         year_data['is_sh_for_diluted_eps'] = shares
@@ -625,7 +621,7 @@ class DataService:
                         
                     year_data = {
                         'fiscal_year': year,
-                        'period_label': 'Q4',
+                        'period_label': 'FY',
                         'period_end_date': date
                     }
                     
@@ -647,12 +643,8 @@ class DataService:
                         if str(year) in date:
                             common_stock = entry.get('commonStock')
                             if common_stock:
-                                try:
-                                    # Remove any '.00' suffix and convert to float
-                                    shares = float(common_stock.replace('.00', ''))
-                                    break
-                                except (ValueError, AttributeError):
-                                    pass
+                                shares = self.get_shares_from_common_stock(common_stock, ticker)
+                                break
 
                     # If not found, try SharesStats
                     if not shares:
@@ -1031,3 +1023,21 @@ class DataService:
         rate_limiter = RateLimiter(calls_per_second=1)  # Limit to 1 call per second
         rate_limiter.wait()
         return self.store_financial_data(ticker, start_year, end_year)
+
+    def get_shares_from_common_stock(self, common_stock: str, ticker: str) -> float:
+        """Convert commonStock value to actual shares count based on ticker"""
+        try:
+            if not common_stock:
+                return 0
+            
+            # Remove '.00' suffix and convert to float
+            shares = float(common_stock.replace('.00', ''))
+            
+            # For Chinese stocks (SZ, SS, HK), divide by 10000 to convert from total shares to millions
+            if any(suffix in ticker for suffix in ['.SZ', '.SS', '.HK']):
+                shares = shares / 10000  # Convert to millions
+            
+            return shares
+        except (ValueError, AttributeError) as e:
+            logger.error(f"Error converting commonStock value: {str(e)}")
+            return 0
