@@ -359,34 +359,55 @@ class DataService:
                     # Try different paths to find the data
                     values = {}
                     
-                    # First try General section
-                    if metric_field == 'eps':
-                        eps = data.get('General', {}).get('EPS', 0)
-                        if eps:
-                            current_year = datetime.now().year
-                            values[current_year] = float(eps)
-                    else:  # is_sh_for_diluted_eps
-                        shares = data.get('General', {}).get('SharesOutstanding', 0)
-                        if shares:
-                            current_year = datetime.now().year
-                            values[current_year] = float(shares)
+                    # Log the relevant sections
+                    logger.debug(f"Earnings data: {data.get('Earnings', {})}")
+                    logger.debug(f"SharesStats data: {data.get('SharesStats', {})}")
+                    logger.debug(f"outstandingShares data: {data.get('outstandingShares', {})}")
                     
-                    # Then try Financials section
-                    financials = data.get('Financials', {})
-                    if 'Income_Statement' in financials:
-                        yearly_data = financials['Income_Statement'].get('yearly', {})
-                        for date, stmt_data in yearly_data.items():
+                    if metric_field == 'eps':
+                        # Try Earnings section first
+                        earnings_data = data.get('Earnings', {}).get('History', {})
+                        for entry in earnings_data:
                             try:
+                                date = entry.get('date')
                                 year = datetime.strptime(date, '%Y-%m-%d').year
                                 if int(start_year) <= year <= int(end_year):
-                                    if metric_field == 'eps':
-                                        value = stmt_data.get('dilutedEPS', 0)
-                                    else:  # is_sh_for_diluted_eps
-                                        value = stmt_data.get('weightedAverageShsOutDil', 0)
-                                    if value:
-                                        values[year] = float(value)
+                                    eps = entry.get('epsActual', 0)
+                                    if eps:
+                                        values[year] = float(eps)
                             except Exception as e:
-                                logger.error(f"Error processing financial data for {date}: {str(e)}")
+                                logger.error(f"Error processing earnings data: {str(e)}")
+                    else:  # is_sh_for_diluted_eps
+                        # Try outstandingShares section first
+                        shares_data = data.get('outstandingShares', {}).get('annual', {})
+                        for entry in shares_data:
+                            try:
+                                date = entry.get('date')
+                                year = datetime.strptime(date, '%Y-%m-%d').year
+                                if int(start_year) <= year <= int(end_year):
+                                    shares = entry.get('shares', 0)
+                                    if shares:
+                                        values[year] = float(shares)
+                            except Exception as e:
+                                logger.error(f"Error processing shares data: {str(e)}")
+                    
+                    # If no data found, try Income Statement
+                    if not values:
+                        financials = data.get('Financials', {})
+                        if 'Income_Statement' in financials:
+                            yearly_data = financials['Income_Statement'].get('yearly', {})
+                            for date, stmt_data in yearly_data.items():
+                                try:
+                                    year = datetime.strptime(date, '%Y-%m-%d').year
+                                    if int(start_year) <= year <= int(end_year):
+                                        if metric_field == 'eps':
+                                            value = stmt_data.get('dilutedEPS', 0)
+                                        else:  # is_sh_for_diluted_eps
+                                            value = stmt_data.get('weightedAverageShsOutDil', 0)
+                                        if value:
+                                            values[year] = float(value)
+                                except Exception as e:
+                                    logger.error(f"Error processing financial data for {date}: {str(e)}")
                     
                     if values:
                         series = pd.Series(values, name=metric_description)
@@ -701,24 +722,32 @@ class DataService:
                     # Get Income Statement data
                     income_stmt = income_statements.get(date, {})
                     
-                    # Try to get EPS and shares from multiple locations
+                    # Get EPS from Earnings section
+                    earnings_data = data.get('Earnings', {}).get('History', {})
                     eps_value = 0
+                    for entry in earnings_data:
+                        if entry.get('date') == date:
+                            eps_value = float(entry.get('epsActual', 0))
+                            break
+                    
+                    # Get shares from outstandingShares section
+                    shares_data = data.get('outstandingShares', {}).get('annual', {})
                     shares_value = 0
+                    for entry in shares_data:
+                        if entry.get('date') == date:
+                            shares_value = float(entry.get('shares', 0))
+                            break
                     
-                    # Try Income Statement first
-                    eps_value = income_stmt.get('dilutedEPS', 0)
-                    shares_value = income_stmt.get('weightedAverageShsOutDil', 0)
-                    
-                    # If not found, try General section
-                    if not eps_value and date == max(income_statements.keys()):  # Only for most recent year
-                        eps_value = data.get('General', {}).get('EPS', 0)
-                    if not shares_value and date == max(income_statements.keys()):
-                        shares_value = data.get('General', {}).get('SharesOutstanding', 0)
+                    # If not found, try Income Statement
+                    if not eps_value:
+                        eps_value = float(income_stmt.get('dilutedEPS', 0))
+                    if not shares_value:
+                        shares_value = float(income_stmt.get('weightedAverageShsOutDil', 0))
                     
                     year_data['is_sales_and_services_revenues'] = float(income_stmt.get('totalRevenue', 0))
                     year_data['is_net_income'] = float(income_stmt.get('netIncome', 0))
-                    year_data['eps'] = float(eps_value)
-                    year_data['is_sh_for_diluted_eps'] = float(shares_value)
+                    year_data['eps'] = eps_value
+                    year_data['is_sh_for_diluted_eps'] = shares_value
                     
                     # Calculate Operating Margin
                     operating_income = float(income_stmt.get('operatingIncome', 0))
