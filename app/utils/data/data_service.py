@@ -375,14 +375,22 @@ class DataService:
                             break
 
                     # Get shares data
-                    for idx, entry in shares_data.items():
-                        date = entry.get('dateFormatted')
-                        if date and str(year) in date:
-                            shares = float(entry.get('shares', 0))
-                            if shares > 0 and 'is_net_income' in year_data:  # Only calculate EPS if we have both values
-                                year_data['is_sh_for_diluted_eps'] = shares
-                                year_data['eps'] = year_data['is_net_income'] / shares
-                            break
+                    shares = None
+                    # First try SharesStats
+                    shares_stats = data.get('SharesStats', {})
+                    if shares_stats and shares_stats.get('SharesOutstanding'):
+                        shares = float(shares_stats.get('SharesOutstanding', 0))
+                    # If not found, try outstandingShares data
+                    if not shares:
+                        for idx, entry in shares_data.items():
+                            date = entry.get('dateFormatted')
+                            if date and str(year) in date:
+                                shares = float(entry.get('shares', 0))
+                                break
+
+                    if shares > 0 and 'is_net_income' in year_data:  # Only calculate EPS if we have both values
+                        year_data['is_sh_for_diluted_eps'] = shares
+                        year_data['eps'] = year_data['is_net_income'] / shares
 
                     # Get cash flow data
                     for date, entry in cash_flow_data.items():
@@ -632,25 +640,30 @@ class DataService:
                             eps_value = float(entry.get('epsActual', 0))
                             break
                     
-                    # Get shares from outstandingShares section
-                    shares_data = data.get('outstandingShares', {}).get('annual', {})
-                    shares_value = 0
-                    for idx in shares_data:
-                        entry = shares_data[idx]
-                        if entry.get('dateFormatted') == date:
-                            shares_value = float(entry.get('shares', 0))
-                            break
+                    # Get shares data
+                    shares = None
+                    # First try SharesStats
+                    shares_stats = data.get('SharesStats', {})
+                    if shares_stats and shares_stats.get('SharesOutstanding'):
+                        shares = float(shares_stats.get('SharesOutstanding', 0))
+                    # If not found, try outstandingShares data
+                    if not shares:
+                        for idx, entry in shares_data.items():
+                            date = entry.get('dateFormatted')
+                            if date and str(year) in date:
+                                shares = float(entry.get('shares', 0))
+                                break
                     
                     # If not found, try Income Statement
                     if not eps_value:
                         eps_value = float(income_stmt.get('dilutedEPS', 0))
-                    if not shares_value:
-                        shares_value = float(income_stmt.get('weightedAverageShsOutDil', 0))
+                    if not shares:
+                        shares = float(income_stmt.get('weightedAverageShsOutDil', 0))
                     
                     year_data['is_sales_and_services_revenues'] = float(income_stmt.get('totalRevenue', 0))
                     year_data['is_net_income'] = float(income_stmt.get('netIncome', 0))
                     year_data['eps'] = eps_value
-                    year_data['is_sh_for_diluted_eps'] = shares_value
+                    year_data['is_sh_for_diluted_eps'] = shares
                     
                     # Calculate Operating Margin
                     operating_income = float(income_stmt.get('operatingIncome', 0))
