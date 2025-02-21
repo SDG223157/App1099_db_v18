@@ -365,21 +365,34 @@ class DataService:
                     logger.debug(f"outstandingShares data: {data.get('outstandingShares', {})}")
                     
                     if metric_field == 'eps':
-                        # Get EPS from Earnings.History
-                        earnings_data = data.get('Earnings', {}).get('History', {})
-                        for date, entry in earnings_data.items():
+                        # Get net income and shares data
+                        income_data = data.get('Financials', {}).get('Income_Statement', {}).get('yearly', {})
+                        shares_data = data.get('outstandingShares', {}).get('annual', {})
+                        
+                        # Process each year
+                        for year in range(int(start_year), int(end_year) + 1):
                             try:
-                                if isinstance(entry, dict):  # Verify entry is a dictionary
-                                    year = datetime.strptime(date, '%Y-%m-%d').year
-                                    if int(start_year) <= year <= int(end_year):
-                                        eps = entry.get('epsActual')
-                                        if eps is not None:  # Check for None since 0 is valid
-                                            # Sum up quarterly EPS for annual total
-                                            if year not in values:
-                                                values[year] = 0
-                                            values[year] += float(eps)
+                                # Find net income for the year
+                                net_income = None
+                                for date, entry in income_data.items():
+                                    if str(year) in date:  # Match the year
+                                        net_income = float(entry.get('netIncome', 0))
+                                        break
+                                
+                                # Find shares for the year
+                                shares = None
+                                for idx, entry in shares_data.items():
+                                    date = entry.get('dateFormatted')
+                                    if date and str(year) in date:
+                                        shares = float(entry.get('shares', 0))
+                                        break
+                                
+                                # Calculate EPS if we have both values
+                                if net_income is not None and shares and shares > 0:
+                                    values[year] = net_income / shares
+                                    
                             except Exception as e:
-                                logger.error(f"Error processing earnings data: {str(e)}")
+                                logger.error(f"Error calculating EPS for {year}: {str(e)}")
                     else:  # is_sh_for_diluted_eps
                         # Get shares from outstandingShares.annual
                         shares_data = data.get('outstandingShares', {}).get('annual', {})
