@@ -367,13 +367,12 @@ class DataService:
                     if metric_field == 'eps':
                         # Get EPS from Earnings.History
                         earnings_data = data.get('Earnings', {}).get('History', {})
-                        for entry in earnings_data:
+                        for date, entry in earnings_data.items():
                             try:
-                                date = entry.get('date')
-                                if date:
+                                if isinstance(entry, dict):  # Verify entry is a dictionary
                                     year = datetime.strptime(date, '%Y-%m-%d').year
                                     if int(start_year) <= year <= int(end_year):
-                                        eps = entry.get('epsActual', 0)
+                                        eps = entry.get('epsActual')
                                         if eps is not None:  # Check for None since 0 is valid
                                             # Sum up quarterly EPS for annual total
                                             if year not in values:
