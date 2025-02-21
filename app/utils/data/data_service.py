@@ -466,9 +466,58 @@ class DataService:
             logger.error(f"Error calculating ROIC: {str(e)}")
             return 0.0
 
-    
+    def convert_to_eodhd_ticker(self, ticker: str) -> str:
+        """
+        Convert Yahoo Finance ticker to EODHD format.
+        
+        Rules:
+        - For US stocks: Remove any suffix and add .US (e.g., AAPL -> AAPL.US)
+        - For non-US exchanges:
+            - TSX: .TO -> .TSE (e.g., TD.TO -> TD.TSE)
+            - LSE: .L -> .LSE (e.g., VOD.L -> VOD.LSE)
+            - etc.
+        """
+        # Exchange mapping from Yahoo to EODHD
+        exchange_map = {
+            'TO': 'TSE',    # Toronto
+            'L': 'LSE',     # London
+            'PA': 'PA',     # Paris
+            'DE': 'XETRA',  # German
+            'MI': 'MI',     # Milan
+            'MC': 'MC',     # Madrid
+            'AX': 'AU',     # Australian
+            'AS': 'AS',     # Amsterdam
+            'BR': 'BR',     # Brussels
+            'ST': 'ST',     # Stockholm
+            'HK': 'HK',     # Hong Kong
+            'TW': 'TW',     # Taiwan
+            'KS': 'KO',     # Korea
+            'T': 'T',       # Tokyo
+        }
+        
+        # Split ticker into base and exchange (if any)
+        parts = ticker.split('.')
+        base_ticker = parts[0]
+        
+        # Handle special cases first
+        if '^' in ticker:  # Indices
+            return None
+        if '-' in ticker or '=' in ticker:  # Special symbols
+            return None
+        
+        if len(parts) == 1:  # No exchange suffix
+            return f"{base_ticker}.US"  # Assume US stock
+        
+        exchange = parts[1]
+        if exchange in exchange_map:
+            return f"{base_ticker}.{exchange_map[exchange]}"
+        
+        # If exchange not found in mapping, return None
+        logger.warning(f"Unknown exchange suffix in ticker: {ticker}")
+        return None
+
     def store_financial_data(self, ticker: str, start_year: str = None, end_year: str = None) -> bool:
-        """Fetch and store financial data, first try ROIC API then fallback to yfinance"""
+        """Fetch and store financial data, first try EODHD API then fallback to yfinance"""
         try:
             logger.info(f"Fetching financial data for {ticker}")
             
@@ -477,45 +526,119 @@ class DataService:
                 end_year = str(current_year)
                 start_year = str(current_year - 10)
 
-            # Try ROIC API first
-            all_metrics_data = []
+            # Try EODHD API first
             try:
-                logger.info(f"Trying ROIC API for {ticker}")
-                for metric_description in self.METRICS:
-                    metric_field = self.METRICS[metric_description]
-                    query = f"get({metric_field}(fa_period_reference=range('{start_year}', '{end_year}'))) for('{ticker}')"
-                    url = f"{self.BASE_URL}?query={query}&apikey={self.API_KEY}"
-
-                    response = requests.get(url)
-                    response.raise_for_status()
+                logger.info(f"Trying EODHD API for {ticker}")
+                
+                # Convert ticker to EODHD format
+                eodhd_ticker = self.convert_to_eodhd_ticker(ticker)
+                if not eodhd_ticker:
+                    logger.warning(f"Could not convert {ticker} to EODHD format")
+                    raise ValueError(f"Unsupported ticker format: {ticker}")
+                
+                # Construct EODHD API URL
+                eodhd_url = f"{self.EODHD_BASE_URL}/api/v1/fundamentals/{eodhd_ticker}?api_token={self.EODHD_API_KEY}"
+                
+                response = requests.get(eodhd_url)
+                response.raise_for_status()
+                data = response.json()
+                
+                if not data:
+                    logger.warning(f"No data from EODHD for {ticker}")
+                    raise ValueError("Empty response from EODHD")
                     
-                    df = pd.DataFrame(response.json())
-                    if not df.empty:
-                        df.columns = df.iloc[0]
-                        df = df.drop(0).reset_index(drop=True)
-                        all_metrics_data.append(df)
-                        logger.info(f"Got {metric_description} from ROIC for {ticker}")
-                    sleep(1)
-
-                if all_metrics_data:
-                    combined_df = pd.concat(all_metrics_data, axis=1)
-                    combined_df = combined_df.loc[:,~combined_df.columns.duplicated()]
-                    logger.info(f"Successfully got all ROIC data for {ticker}")
+                financial_data = []
+                
+                # Get annual financials
+                income_statements = data.get('Financials', {}).get('Income_Statement', {}).get('yearly', {})
+                balance_sheets = data.get('Financials', {}).get('Balance_Sheet', {}).get('yearly', {})
+                cash_flows = data.get('Financials', {}).get('Cash_Flow', {}).get('yearly', {})
+                
+                # Process each year's data
+                for date in income_statements.keys():
+                    year = datetime.strptime(date, '%Y-%m-%d').year
+                    if not (int(start_year) <= year <= int(end_year)):
+                        continue
+                        
+                    year_data = {
+                        'fiscal_year': year,
+                        'period_label': 'Q4',
+                        'period_end_date': date
+                    }
                     
-                    cleaned_ticker = self.clean_ticker_for_table_name(ticker)
-                    table_name = f"roic_{cleaned_ticker}"
-                    success = self.store_dataframe(combined_df, table_name)
-                    if success:
-                        logger.info(f"Stored ROIC data for {ticker}")
-                        return True
-                else:
-                    logger.warning(f"No data from ROIC for {ticker}")
+                    # Get Income Statement data
+                    income_stmt = income_statements.get(date, {})
+                    year_data['is_sales_and_services_revenues'] = float(income_stmt.get('totalRevenue', 0))
+                    year_data['is_net_income'] = float(income_stmt.get('netIncome', 0))
+                    year_data['eps'] = float(income_stmt.get('eps', 0))
+                    
+                    # Calculate Operating Margin
+                    operating_income = float(income_stmt.get('operatingIncome', 0))
+                    total_revenue = float(income_stmt.get('totalRevenue', 0))
+                    year_data['oper_margin'] = float(f"{(operating_income / total_revenue * 100):.15f}") if total_revenue else 0.0
+                    
+                    # Get Cash Flow data
+                    cash_flow = cash_flows.get(date, {})
+                    year_data['cf_cash_from_oper'] = float(cash_flow.get('operatingCashFlow', 0))
+                    year_data['cf_cap_expenditures'] = float(cash_flow.get('capitalExpenditures', 0))
+                    
+                    # Get Balance Sheet data for ROIC calculation
+                    balance_sheet = balance_sheets.get(date, {})
+                    invested_capital = float(balance_sheet.get('totalStockholderEquity', 0)) + \
+                                     float(balance_sheet.get('totalLongTermDebt', 0))
+                    year_data['return_on_inv_capital'] = float(f"{(operating_income / invested_capital * 100):.15f}") if invested_capital else 0.0
+                    
+                    # Get shares data
+                    year_data['is_sh_for_diluted_eps'] = float(income_stmt.get('weightedAverageShsOutDil', 0))
+                    
+                    financial_data.append(year_data)
+                
+                if not financial_data:
+                    logger.warning(f"No financial data found in EODHD for {ticker}")
+                    raise ValueError("No processed data from EODHD")
+                
+                # Convert to DataFrame
+                df = pd.DataFrame(financial_data)
+                
+                # Ensure all required columns exist
+                required_columns = [
+                    'fiscal_year',
+                    'period_label',
+                    'period_end_date',
+                    'is_sales_and_services_revenues',
+                    'cf_cash_from_oper',
+                    'is_net_income',
+                    'eps',
+                    'oper_margin',
+                    'cf_cap_expenditures',
+                    'return_on_inv_capital',
+                    'is_sh_for_diluted_eps'
+                ]
+                
+                for col in required_columns:
+                    if col not in df.columns:
+                        df[col] = 0.0
+                
+                # Sort by fiscal year ascending
+                df = df.sort_values('fiscal_year', ascending=True)
+                df.reset_index(drop=True, inplace=True)
+                
+                # Reorder columns
+                df = df[required_columns]
+                
+                # Store in database
+                cleaned_ticker = self.clean_ticker_for_table_name(ticker)
+                table_name = f"roic_{cleaned_ticker}"
+                
+                success = self.store_dataframe(df, table_name)
+                if success:
+                    logger.info(f"Successfully stored EODHD data for {ticker}")
+                    return True
                     
             except Exception as e:
-                logger.warning(f"ROIC API failed for {ticker}: {str(e)}, trying yfinance")
-                success = False
-
-            # Try yfinance if ROIC failed
+                logger.warning(f"EODHD API failed for {ticker}: {str(e)}, trying yfinance")
+                
+            # If EODHD fails, fall back to existing yfinance implementation
             try:
                 logger.info(f"Getting data from yfinance for {ticker}")
                 yf_ticker = yf.Ticker(ticker)
@@ -644,7 +767,7 @@ class DataService:
                 return success
                 
             except Exception as e:
-                logger.error(f"Both ROIC and yfinance failed for {ticker}: {str(e)}")
+                logger.error(f"Both EODHD and yfinance failed for {ticker}: {str(e)}")
                 logger.error(f"Traceback: {traceback.format_exc()}")
                 return False
                     

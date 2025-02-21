@@ -34,3 +34,7 @@ class Config:
     SESSION_COOKIE_HTTPONLY = True
     REMEMBER_COOKIE_HTTPONLY = True
     PROXY_FIX = True
+    
+    # EODHD API configuration
+    EODHD_API_KEY = os.getenv('EODHD_API_KEY')
+    EODHD_BASE_URL = "https://eodhd.com"
