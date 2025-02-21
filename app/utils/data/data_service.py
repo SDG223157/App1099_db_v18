@@ -787,7 +787,7 @@ class DataService:
         return self.store_financial_data(ticker, start_year, end_year)
 
     def get_shares_from_common_stock(self, common_stock: str, ticker: str) -> float:
-        """Convert commonStock value to actual shares count based on ticker"""
+        """Convert commonStock value to actual shares count"""
         try:
             if not common_stock:
                 return 0
@@ -795,10 +795,6 @@ class DataService:
             # Handle string values that might contain commas or other formatting
             clean_value = str(common_stock).replace(',', '').replace('.00', '')
             shares = float(clean_value)
-            
-            # For Chinese stocks (SZ, SS), divide by 10000 to convert from total shares to millions
-            if any(suffix in ticker for suffix in ['.SZ', '.SS']):
-                shares = shares / 10000  # Convert to millions
             
             return shares
         except (ValueError, AttributeError) as e:
