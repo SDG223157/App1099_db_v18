@@ -291,29 +291,104 @@ class DataService:
             raise
         
         
-    def get_financial_data(self, ticker: str, metric_description: str, 
-                        start_year: str, end_year: str) -> pd.Series:
+    def get_financial_data(self, ticker: str, metric_description: str, start_year: str, end_year: str) -> pd.Series:
         """
-        Get financial data from MySQL database or ROIC API if not exists/incomplete.
+        Get financial data from EODHD API, MySQL database, or yfinance if not exists/incomplete.
         """
         cleaned_ticker = self.clean_ticker_for_table_name(ticker)
         table_name = f"roic_{cleaned_ticker}"
-        MAX_MISSING_YEARS_TOLERANCE = 2 
-        # company_name = yf.Ticker(ticker).info['longName']
         
         try:
-            # First try to get data from database
-            # if "^" in ticker or "-" in ticker or "=" in ticker:
-            #     return None
             if not is_stock(ticker):
                 return None
-            # if company_name:
-            # # Check for excluded terms using regex (case insensitive)
-            #     excluded_terms = r'shares|etf|index|trust'
-            #     if re.search(excluded_terms, company_name, re.IGNORECASE):
-            #         return None
-                
             
+            # Try EODHD API first
+            try:
+                logger.info(f"Getting financial data for {ticker} from EODHD API")
+                
+                # Convert ticker to EODHD format
+                eodhd_ticker = self.convert_to_eodhd_ticker(ticker)
+                if not eodhd_ticker:
+                    logger.warning(f"Could not convert {ticker} to EODHD format")
+                    raise ValueError(f"Unsupported ticker format: {ticker}")
+                
+                # Construct EODHD API URL
+                eodhd_url = f"{self.EODHD_BASE_URL}/api/v1/fundamentals/{eodhd_ticker}?api_token={self.EODHD_API_KEY}"
+                
+                response = requests.get(eodhd_url)
+                response.raise_for_status()
+                data = response.json()
+                
+                if not data:
+                    raise ValueError("Empty response from EODHD")
+                    
+                # Get annual financials based on metric
+                metric_field = self.METRICS.get(metric_description.lower())
+                if not metric_field:
+                    raise ValueError(f"Unknown metric: {metric_description}")
+                    
+                # Map our metric fields to EODHD fields
+                eodhd_field_map = {
+                    'is_sales_and_services_revenues': ('Income_Statement', 'totalRevenue'),
+                    'cf_cash_from_oper': ('Cash_Flow', 'operatingCashFlow'),
+                    'is_net_income': ('Income_Statement', 'netIncome'),
+                    'eps': ('Income_Statement', 'eps'),
+                    'cf_cap_expenditures': ('Cash_Flow', 'capitalExpenditures'),
+                    'is_sh_for_diluted_eps': ('Income_Statement', 'weightedAverageShsOutDil')
+                }
+                
+                if metric_field in eodhd_field_map:
+                    statement_type, field_name = eodhd_field_map[metric_field]
+                    yearly_data = data.get('Financials', {}).get(statement_type, {}).get('yearly', {})
+                    
+                    values = {}
+                    for date, stmt_data in yearly_data.items():
+                        year = datetime.strptime(date, '%Y-%m-%d').year
+                        if int(start_year) <= year <= int(end_year):
+                            value = float(stmt_data.get(field_name, 0))
+                            values[year] = value
+                            
+                    if values:
+                        return pd.Series(values, name=metric_description)
+                    
+                # For calculated metrics (operating margin, ROIC)
+                elif metric_field == 'oper_margin':
+                    income_stmts = data.get('Financials', {}).get('Income_Statement', {}).get('yearly', {})
+                    values = {}
+                    for date, stmt_data in income_stmts.items():
+                        year = datetime.strptime(date, '%Y-%m-%d').year
+                        if int(start_year) <= year <= int(end_year):
+                            operating_income = float(stmt_data.get('operatingIncome', 0))
+                            total_revenue = float(stmt_data.get('totalRevenue', 0))
+                            margin = (operating_income / total_revenue * 100) if total_revenue else 0.0
+                            values[year] = float(f"{margin:.15f}")
+                    if values:
+                        return pd.Series(values, name=metric_description)
+                    
+                elif metric_field == 'return_on_inv_capital':
+                    income_stmts = data.get('Financials', {}).get('Income_Statement', {}).get('yearly', {})
+                    balance_sheets = data.get('Financials', {}).get('Balance_Sheet', {}).get('yearly', {})
+                    values = {}
+                    for date in income_stmts.keys():
+                        year = datetime.strptime(date, '%Y-%m-%d').year
+                        if int(start_year) <= year <= int(end_year):
+                            income_stmt = income_stmts.get(date, {})
+                            balance_sheet = balance_sheets.get(date, {})
+                            
+                            operating_income = float(income_stmt.get('operatingIncome', 0))
+                            invested_capital = float(balance_sheet.get('totalStockholderEquity', 0)) + \
+                                            float(balance_sheet.get('totalLongTermDebt', 0))
+                            roic = (operating_income / invested_capital * 100) if invested_capital else 0.0
+                            values[year] = float(f"{roic:.15f}")
+                    if values:
+                        return pd.Series(values, name=metric_description)
+                
+                raise ValueError(f"Could not get {metric_description} from EODHD")
+                
+            except Exception as e:
+                logger.warning(f"EODHD API failed for {ticker}: {str(e)}, trying database")
+                
+            # If EODHD fails, try database
             if self.table_exists(table_name):
                 print(f"Getting financial data for {ticker} from database")
                 df = pd.read_sql_table(table_name, self.engine)
@@ -336,27 +411,6 @@ class DataService:
                             index=filtered_df['fiscal_year'],
                             name=metric_description
                         )
-                    # if len(missing_years) == 0:
-                    # if len(missing_years) <= MAX_MISSING_YEARS_TOLERANCE:
-                    #     return pd.Series(
-                    #         filtered_df[metric_field].values,
-                    #         index=filtered_df['fiscal_year'],
-                    #         name=metric_description
-                    #     )
-                    # else:
-                    #     print(f"Incomplete data for {ticker}, fetching from API")
-                    #     # If data is incomplete, fetch all data and update database
-                    #     success = self.store_financial_data(ticker, start_year, end_year)
-                    #     if success:
-                    #         df = pd.read_sql_table(table_name, self.engine)
-                    #         df['fiscal_year'] = df['fiscal_year'].astype(int)
-                    #         mask = (df['fiscal_year'] >= int(start_year)) & (df['fiscal_year'] <= int(end_year))
-                    #         filtered_df = df[mask]
-                    #         return pd.Series(
-                    #             filtered_df[metric_field].values,
-                    #             index=filtered_df['fiscal_year'],
-                    #             name=metric_description
-                    #         )
 
             # If not in database, store it first
             print(f"Data not found in database for {ticker}, fetching from API")
@@ -376,7 +430,7 @@ class DataService:
                 return None
                 
         except Exception as e:
-            print(f"Error in get_financial_data for {ticker}: {str(e)}")
+            logger.error(f"Error in get_financial_data for {ticker}: {str(e)}")
             return None
     
     def store_historical_data(self, ticker: str, start_date: str = None, end_date: str = None) -> bool:
