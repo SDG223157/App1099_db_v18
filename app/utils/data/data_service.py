@@ -365,7 +365,7 @@ class DataService:
                     logger.debug(f"outstandingShares data: {data.get('outstandingShares', {})}")
                     
                     if metric_field == 'eps':
-                        # Try Earnings section first
+                        # Get EPS from Earnings.History
                         earnings_data = data.get('Earnings', {}).get('History', {})
                         for entry in earnings_data:
                             try:
@@ -378,16 +378,18 @@ class DataService:
                             except Exception as e:
                                 logger.error(f"Error processing earnings data: {str(e)}")
                     else:  # is_sh_for_diluted_eps
-                        # Try outstandingShares section first
+                        # Get shares from outstandingShares.annual
                         shares_data = data.get('outstandingShares', {}).get('annual', {})
-                        for entry in shares_data:
+                        for idx in shares_data:
                             try:
-                                date = entry.get('date')
-                                year = datetime.strptime(date, '%Y-%m-%d').year
-                                if int(start_year) <= year <= int(end_year):
-                                    shares = entry.get('shares', 0)
-                                    if shares:
-                                        values[year] = float(shares)
+                                entry = shares_data[idx]
+                                date = entry.get('dateFormatted')
+                                if date:
+                                    year = datetime.strptime(date, '%Y-%m-%d').year
+                                    if int(start_year) <= year <= int(end_year):
+                                        shares = entry.get('shares', 0)
+                                        if shares:
+                                            values[year] = float(shares)
                             except Exception as e:
                                 logger.error(f"Error processing shares data: {str(e)}")
                     
@@ -733,8 +735,9 @@ class DataService:
                     # Get shares from outstandingShares section
                     shares_data = data.get('outstandingShares', {}).get('annual', {})
                     shares_value = 0
-                    for entry in shares_data:
-                        if entry.get('date') == date:
+                    for idx in shares_data:
+                        entry = shares_data[idx]
+                        if entry.get('dateFormatted') == date:
                             shares_value = float(entry.get('shares', 0))
                             break
                     
