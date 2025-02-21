@@ -340,17 +340,33 @@ class DataService:
                 if not metric_field:
                     raise ValueError(f"Unknown metric: {metric_description}")
                     
-                # Map our metric fields to EODHD fields
+                # Update the field mapping in get_financial_data
                 eodhd_field_map = {
                     'is_sales_and_services_revenues': ('Income_Statement', 'totalRevenue'),
                     'cf_cash_from_oper': ('Cash_Flow', 'totalCashFromOperatingActivities'),
                     'is_net_income': ('Income_Statement', 'netIncome'),
-                    'eps': ('Highlights', 'EPS'),
+                    'eps': ('Highlights', 'EPS'),  # This will be handled differently
                     'cf_cap_expenditures': ('Cash_Flow', 'capitalExpenditures'),
-                    'is_sh_for_diluted_eps': ('Highlights', 'SharesOutstanding')
+                    'is_sh_for_diluted_eps': ('Highlights', 'SharesOutstanding')  # This will be handled differently
                 }
                 
-                if metric_field in eodhd_field_map:
+                if metric_field in ['eps', 'is_sh_for_diluted_eps']:
+                    # Handle Highlights data differently as it's structured differently
+                    yearly_data = data.get('Financials', {}).get('Highlights', {}).get('yearly', {})
+                    field_name = eodhd_field_map[metric_field][1]  # Get just the field name
+                    
+                    values = {}
+                    for date, highlights in yearly_data.items():
+                        year = datetime.strptime(date, '%Y-%m-%d').year
+                        if int(start_year) <= year <= int(end_year):
+                            value = float(highlights.get(field_name, 0))
+                            values[year] = value
+                            
+                    if values:
+                        series = pd.Series(values, name=metric_description)
+                        return series.sort_index(ascending=False)
+                
+                elif metric_field in eodhd_field_map:
                     statement_type, field_name = eodhd_field_map[metric_field]
                     yearly_data = data.get('Financials', {}).get(statement_type, {}).get('yearly', {})
                     
@@ -656,13 +672,16 @@ class DataService:
                         'period_end_date': date
                     }
                     
-                    # Get Income Statement and Highlights data
+                    # Get Income Statement data
                     income_stmt = income_statements.get(date, {})
-                    highlights = data.get('Highlights', {})
+                    # Get Highlights data for this specific year
+                    highlights = data.get('Financials', {}).get('Highlights', {}).get('yearly', {}).get(date, {})
                     
                     year_data['is_sales_and_services_revenues'] = float(income_stmt.get('totalRevenue', 0))
                     year_data['is_net_income'] = float(income_stmt.get('netIncome', 0))
+                    # Get EPS and shares from the yearly Highlights data
                     year_data['eps'] = float(highlights.get('EPS', 0))
+                    year_data['is_sh_for_diluted_eps'] = float(highlights.get('SharesOutstanding', 0))
                     
                     # Calculate Operating Margin
                     operating_income = float(income_stmt.get('operatingIncome', 0))
@@ -679,9 +698,6 @@ class DataService:
                     invested_capital = float(balance_sheet.get('totalStockholderEquity', 0)) + \
                                      float(balance_sheet.get('totalLongTermDebt', 0))
                     year_data['return_on_inv_capital'] = float(f"{(operating_income / invested_capital * 100):.15f}") if invested_capital else 0.0
-                    
-                    # Get shares data
-                    year_data['is_sh_for_diluted_eps'] = float(highlights.get('SharesOutstanding', 0))
                     
                     financial_data.append(year_data)
                 
