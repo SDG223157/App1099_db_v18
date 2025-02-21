@@ -297,244 +297,125 @@ class DataService:
         
     def get_financial_data(self, ticker: str, metric_description: str, start_year: str, end_year: str) -> pd.Series:
         """
-        Get financial data from EODHD API, MySQL database, or yfinance if not exists/incomplete.
+        Get financial data from database first, if not exists then fetch from EODHD API and store it.
         """
         cleaned_ticker = self.clean_ticker_for_table_name(ticker)
         table_name = f"roic_{cleaned_ticker}"
-        
+        values = {}
+
         try:
             if not is_stock(ticker):
                 return None
-            
-            # Try EODHD API first
-            try:
-                logger.info(f"Getting financial data for {ticker} from EODHD API")
-                
-                # Check if EODHD API key is configured
-                if not self.EODHD_API_KEY:
-                    logger.warning("EODHD API key not configured, skipping EODHD API")
-                    raise ValueError("EODHD API key not configured")
-                
-                # Convert ticker to EODHD format
-                eodhd_ticker = self.convert_to_eodhd_ticker(ticker)
-                if not eodhd_ticker:
-                    logger.warning(f"Could not convert {ticker} to EODHD format")
-                    raise ValueError(f"Unsupported ticker format: {ticker}")
-                
-                # Construct EODHD API URL
-                eodhd_url = f"{self.EODHD_BASE_URL}/fundamentals/{eodhd_ticker}?api_token={self.EODHD_API_KEY}&fmt=json"
-                logger.debug(f"EODHD API URL: {eodhd_url}")
-                
-                response = requests.get(eodhd_url)
-                logger.debug(f"EODHD API Response status: {response.status_code}")
-                
-                data = response.json()
-                # Add detailed logging of the data structure
-                logger.debug("EODHD Data Structure:")
-                logger.debug(f"Keys in root: {list(data.keys())}")
-                if 'Financials' in data:
-                    logger.debug(f"Keys in Financials: {list(data['Financials'].keys())}")
-                    if 'Highlights' in data['Financials']:
-                        logger.debug(f"Highlights structure: {data['Financials']['Highlights']}")
-                
-                if not data:
-                    raise ValueError("Empty response from EODHD")
-                    
-                # Get annual financials based on metric
-                metric_field = self.METRICS.get(metric_description.lower())
-                if not metric_field:
-                    raise ValueError(f"Unknown metric: {metric_description}")
-                    
-                # Update the field mapping in get_financial_data
-                eodhd_field_map = {
-                    'is_sales_and_services_revenues': ('Income_Statement', 'totalRevenue'),
-                    'cf_cash_from_oper': ('Cash_Flow', 'totalCashFromOperatingActivities'),
-                    'is_net_income': ('Income_Statement', 'netIncome'),
-                    'eps': ('Highlights', 'EPS'),  # This will be handled differently
-                    'cf_cap_expenditures': ('Cash_Flow', 'capitalExpenditures'),
-                    'is_sh_for_diluted_eps': ('Highlights', 'SharesOutstanding')  # This will be handled differently
-                }
-                
-                if metric_field in ['eps', 'is_sh_for_diluted_eps']:
-                    # Try different paths to find the data
-                    values = {}
-                    
-                    # Log the relevant sections
-                    logger.debug(f"Earnings data: {data.get('Earnings', {})}")
-                    logger.debug(f"SharesStats data: {data.get('SharesStats', {})}")
-                    logger.debug(f"outstandingShares data: {data.get('outstandingShares', {})}")
-                    
-                    if metric_field == 'eps':
-                        # Get net income and shares data
-                        income_data = data.get('Financials', {}).get('Income_Statement', {}).get('yearly', {})
-                        shares_data = data.get('outstandingShares', {}).get('annual', {})
-                        
-                        # Process each year
-                        for year in range(int(start_year), int(end_year) + 1):
-                            try:
-                                # Find net income for the year
-                                net_income = None
-                                for date, entry in income_data.items():
-                                    if str(year) in date:  # Match the year
-                                        net_income = float(entry.get('netIncome', 0))
-                                        break
-                                
-                                # Find shares for the year
-                                shares = None
-                                for idx, entry in shares_data.items():
-                                    date = entry.get('dateFormatted')
-                                    if date and str(year) in date:
-                                        shares = float(entry.get('shares', 0))
-                                        break
-                                
-                                # Calculate EPS if we have both values
-                                if net_income is not None and shares and shares > 0:
-                                    values[year] = net_income / shares
-                                    
-                            except Exception as e:
-                                logger.error(f"Error calculating EPS for {year}: {str(e)}")
-                    else:  # is_sh_for_diluted_eps
-                        # Get shares from outstandingShares.annual
-                        shares_data = data.get('outstandingShares', {}).get('annual', {})
-                        for idx in shares_data:
-                            try:
-                                entry = shares_data[idx]
-                                date = entry.get('dateFormatted')
-                                if date:
-                                    year = datetime.strptime(date, '%Y-%m-%d').year
-                                    if int(start_year) <= year <= int(end_year):
-                                        shares = entry.get('shares', 0)
-                                        if shares:
-                                            values[year] = float(shares)
-                            except Exception as e:
-                                logger.error(f"Error processing shares data: {str(e)}")
-                    
-                    # If no data found, try Income Statement
-                    if not values:
-                        financials = data.get('Financials', {})
-                        if 'Income_Statement' in financials:
-                            yearly_data = financials['Income_Statement'].get('yearly', {})
-                            for date, stmt_data in yearly_data.items():
-                                try:
-                                    year = datetime.strptime(date, '%Y-%m-%d').year
-                                    if int(start_year) <= year <= int(end_year):
-                                        if metric_field == 'eps':
-                                            value = stmt_data.get('dilutedEPS', 0)
-                                        else:  # is_sh_for_diluted_eps
-                                            value = stmt_data.get('weightedAverageShsOutDil', 0)
-                                        if value:
-                                            values[year] = float(value)
-                                except Exception as e:
-                                    logger.error(f"Error processing financial data for {date}: {str(e)}")
-                    
-                    if values:
-                        series = pd.Series(values, name=metric_description)
-                        return series.sort_index(ascending=False)
-                
-                elif metric_field in eodhd_field_map:
-                    statement_type, field_name = eodhd_field_map[metric_field]
-                    yearly_data = data.get('Financials', {}).get(statement_type, {}).get('yearly', {})
-                    
-                    values = {}
-                    for date, stmt_data in yearly_data.items():
-                        year = datetime.strptime(date, '%Y-%m-%d').year
-                        if int(start_year) <= year <= int(end_year):
-                            value = float(stmt_data.get(field_name, 0))
-                            values[year] = value
-                            
-                    if values:
-                        # Create series and sort in descending order (most recent first)
-                        series = pd.Series(values, name=metric_description)
-                        return series.sort_index(ascending=False)
-                    
-                # For calculated metrics (operating margin, ROIC)
-                elif metric_field == 'oper_margin':
-                    income_stmts = data.get('Financials', {}).get('Income_Statement', {}).get('yearly', {})
-                    values = {}
-                    for date, stmt_data in income_stmts.items():
-                        year = datetime.strptime(date, '%Y-%m-%d').year
-                        if int(start_year) <= year <= int(end_year):
-                            operating_income = float(stmt_data.get('operatingIncome', 0))
-                            total_revenue = float(stmt_data.get('totalRevenue', 0))
-                            margin = (operating_income / total_revenue * 100) if total_revenue else 0.0
-                            values[year] = float(f"{margin:.15f}")
-                    if values:
-                        # Create series and sort in descending order (most recent first)
-                        series = pd.Series(values, name=metric_description)
-                        return series.sort_index(ascending=False)
-                    
-                elif metric_field == 'return_on_inv_capital':
-                    income_stmts = data.get('Financials', {}).get('Income_Statement', {}).get('yearly', {})
-                    balance_sheets = data.get('Financials', {}).get('Balance_Sheet', {}).get('yearly', {})
-                    values = {}
-                    for date in income_stmts.keys():
-                        year = datetime.strptime(date, '%Y-%m-%d').year
-                        if int(start_year) <= year <= int(end_year):
-                            income_stmt = income_stmts.get(date, {})
-                            balance_sheet = balance_sheets.get(date, {})
-                            
-                            operating_income = float(income_stmt.get('operatingIncome', 0))
-                            invested_capital = float(balance_sheet.get('totalStockholderEquity', 0)) + \
-                                            float(balance_sheet.get('totalLongTermDebt', 0))
-                            roic = (operating_income / invested_capital * 100) if invested_capital else 0.0
-                            values[year] = float(f"{roic:.15f}")
-                    if values:
-                        # Create series and sort in descending order (most recent first)
-                        series = pd.Series(values, name=metric_description)
-                        return series.sort_index(ascending=False)
-                
-                raise ValueError(f"Could not get {metric_description} from EODHD")
-                
-            except Exception as e:
-                logger.warning(f"EODHD API failed for {ticker}: {str(e)}, trying database")
-                
-            # If EODHD fails, try database
-            if self.table_exists(table_name):
-                print(f"Getting financial data for {ticker} from database")
-                df = pd.read_sql_table(table_name, self.engine)
-                
-                metric_field = self.METRICS.get(metric_description.lower())
-                if metric_field in df.columns:
-                    df['fiscal_year'] = df['fiscal_year'].astype(int)
-                    
-                    # Filter for requested years
-                    mask = (df['fiscal_year'] >= int(start_year)) & (df['fiscal_year'] <= int(end_year))
-                    filtered_df = df[mask]
-                    
-                    # Check if we have all the years we need
-                    requested_years = set(range(int(start_year), int(end_year) + 1))
-                    actual_years = set(filtered_df['fiscal_year'].values)
-                    missing_years = requested_years - actual_years
-                    
-                    # Create series and sort in descending order (most recent first)
-                    series = pd.Series(
-                            filtered_df[metric_field].values,
-                            index=filtered_df['fiscal_year'],
-                            name=metric_description
-                        )
-                    return series.sort_index(ascending=False)
 
-            # If not in database, store it first
-            print(f"Data not found in database for {ticker}, fetching from API")
-            success = self.store_financial_data(ticker, start_year, end_year)
-            if success:
+            # First check if data exists in database
+            if self.table_exists(table_name):
+                logger.info(f"Getting financial data for {ticker} from database")
                 df = pd.read_sql_table(table_name, self.engine)
-                metric_field = self.METRICS.get(metric_description.lower())
-                df['fiscal_year'] = df['fiscal_year'].astype(int)
-                mask = (df['fiscal_year'] >= int(start_year)) & (df['fiscal_year'] <= int(end_year))
-                filtered_df = df[mask]
-                # Create series and sort in descending order (most recent first)
-                series = pd.Series(
-                    filtered_df[metric_field].values,
-                    index=filtered_df['fiscal_year'],
-                    name=metric_description
-                )
-                return series.sort_index(ascending=False)
-            else:
-                return None
+                if not df.empty:
+                    for year in range(int(start_year), int(end_year) + 1):
+                        year_data = df[df['fiscal_year'] == year]
+                        if not year_data.empty:
+                            metric_field = METRICS_MAP.get(metric_description)
+                            if metric_field in year_data.columns:
+                                values[year] = year_data[metric_field].iloc[0]
+                    if values:
+                        return pd.Series(values)
+
+            # If not in database or incomplete, get from EODHD API
+            logger.info(f"Getting financial data for {ticker} from EODHD API")
+            
+            # Check EODHD API key
+            if not self.EODHD_API_KEY:
+                raise ValueError("EODHD API key not configured")
+            
+            # Get data from EODHD
+            eodhd_ticker = self.convert_to_eodhd_ticker(ticker)
+            eodhd_url = f"{self.EODHD_BASE_URL}/fundamentals/{eodhd_ticker}?api_token={self.EODHD_API_KEY}&fmt=json"
+            response = requests.get(eodhd_url)
+            
+            if response.status_code != 200:
+                raise ValueError(f"EODHD API request failed with status {response.status_code}")
+            
+            data = response.json()
+            
+            # Process the data
+            financial_data = []
+            metric_field = METRICS_MAP.get(metric_description)
+            
+            if metric_field == 'eps':
+                # Get net income and shares data
+                income_data = data.get('Financials', {}).get('Income_Statement', {}).get('yearly', {})
+                shares_data = data.get('outstandingShares', {}).get('annual', {})
                 
+                # Process each year
+                for year in range(int(start_year), int(end_year) + 1):
+                    try:
+                        # Find net income for the year
+                        net_income = None
+                        for date, entry in income_data.items():
+                            if str(year) in date:  # Match the year
+                                net_income = float(entry.get('netIncome', 0))
+                                break
+                        
+                        # Find shares for the year
+                        shares = None
+                        for idx, entry in shares_data.items():
+                            date = entry.get('dateFormatted')
+                            if date and str(year) in date:
+                                shares = float(entry.get('shares', 0))
+                                break
+                        
+                        # Calculate EPS if we have both values
+                        if net_income is not None and shares and shares > 0:
+                            values[year] = net_income / shares
+                            financial_data.append({
+                                'fiscal_year': year,
+                                'period_label': 'FY',
+                                'period_end_date': f"{year}-12-31",
+                                'eps': net_income / shares
+                            })
+                            
+                    except Exception as e:
+                        logger.error(f"Error calculating EPS for {year}: {str(e)}")
+                        
+            else:  # Handle other metrics
+                # Get yearly financial data
+                income_data = data.get('Financials', {}).get('Income_Statement', {}).get('yearly', {})
+                balance_data = data.get('Financials', {}).get('Balance_Sheet', {}).get('yearly', {})
+                
+                for year in range(int(start_year), int(end_year) + 1):
+                    try:
+                        # Find data for the year
+                        for date, entry in income_data.items():
+                            if str(year) in date:
+                                year_data = {
+                                    'fiscal_year': year,
+                                    'period_label': 'FY',
+                                    'period_end_date': date
+                                }
+                                
+                                if metric_field == 'is_sh_for_diluted_eps':
+                                    shares = data.get('SharesStats', {}).get('SharesOutstanding', 0)
+                                    year_data['is_sh_for_diluted_eps'] = shares
+                                    values[year] = shares
+                                
+                                financial_data.append(year_data)
+                                break
+                                
+                    except Exception as e:
+                        logger.error(f"Error processing {metric_field} for {year}: {str(e)}")
+
+            # Store the data in database
+            if financial_data:
+                df = pd.DataFrame(financial_data)
+                self.store_dataframe(df, table_name)
+                logger.info(f"Successfully stored EODHD data for {ticker}")
+
+            return pd.Series(values)
+
         except Exception as e:
-            logger.error(f"Error in get_financial_data for {ticker}: {str(e)}")
+            logger.error(f"Error getting financial data for {ticker}: {str(e)}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return None
     
     def store_historical_data(self, ticker: str, start_date: str = None, end_date: str = None) -> bool:
