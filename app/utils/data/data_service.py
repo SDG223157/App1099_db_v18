@@ -376,16 +376,38 @@ class DataService:
 
                     # Get shares data
                     shares = None
-                    # First try SharesStats
-                    shares_stats = data.get('SharesStats', {})
-                    if shares_stats and shares_stats.get('SharesOutstanding'):
-                        shares = float(shares_stats.get('SharesOutstanding', 0))
-                    # If not found, try outstandingShares data
+
+                    # First try Balance Sheet commonStock
+                    for date, entry in balance_data.items():
+                        if str(year) in date:
+                            common_stock = entry.get('commonStock')
+                            if common_stock:
+                                try:
+                                    # Remove any '.00' suffix and convert to float
+                                    shares = float(common_stock.replace('.00', ''))
+                                    break
+                                except (ValueError, AttributeError):
+                                    pass
+
+                    # If not found, try SharesStats
+                    if not shares:
+                        shares_stats = data.get('SharesStats', {})
+                        if shares_stats and shares_stats.get('SharesOutstanding'):
+                            shares = float(shares_stats.get('SharesOutstanding', 0))
+
+                    # If still not found, try outstandingShares data
                     if not shares:
                         for idx, entry in shares_data.items():
                             date = entry.get('dateFormatted')
                             if date and str(year) in date:
                                 shares = float(entry.get('shares', 0))
+                                break
+
+                    # If still not found, try Income Statement
+                    if not shares:
+                        for date, entry in income_data.items():
+                            if str(year) in date:
+                                shares = float(entry.get('weightedAverageShsOutDil', 0))
                                 break
 
                     if shares > 0 and 'is_net_income' in year_data:  # Only calculate EPS if we have both values
@@ -642,11 +664,26 @@ class DataService:
                     
                     # Get shares data
                     shares = None
-                    # First try SharesStats
-                    shares_stats = data.get('SharesStats', {})
-                    if shares_stats and shares_stats.get('SharesOutstanding'):
-                        shares = float(shares_stats.get('SharesOutstanding', 0))
-                    # If not found, try outstandingShares data
+
+                    # First try Balance Sheet commonStock
+                    for date, entry in balance_sheets.items():
+                        if str(year) in date:
+                            common_stock = entry.get('commonStock')
+                            if common_stock:
+                                try:
+                                    # Remove any '.00' suffix and convert to float
+                                    shares = float(common_stock.replace('.00', ''))
+                                    break
+                                except (ValueError, AttributeError):
+                                    pass
+
+                    # If not found, try SharesStats
+                    if not shares:
+                        shares_stats = data.get('SharesStats', {})
+                        if shares_stats and shares_stats.get('SharesOutstanding'):
+                            shares = float(shares_stats.get('SharesOutstanding', 0))
+
+                    # If still not found, try outstandingShares data
                     if not shares:
                         for idx, entry in shares_data.items():
                             date = entry.get('dateFormatted')
@@ -654,11 +691,12 @@ class DataService:
                                 shares = float(entry.get('shares', 0))
                                 break
                     
-                    # If not found, try Income Statement
-                    if not eps_value:
-                        eps_value = float(income_stmt.get('dilutedEPS', 0))
+                    # If still not found, try Income Statement
                     if not shares:
-                        shares = float(income_stmt.get('weightedAverageShsOutDil', 0))
+                        for date, entry in income_statements.items():
+                            if str(year) in date:
+                                shares = float(entry.get('weightedAverageShsOutDil', 0))
+                                break
                     
                     year_data['is_sales_and_services_revenues'] = float(income_stmt.get('totalRevenue', 0))
                     year_data['is_net_income'] = float(income_stmt.get('netIncome', 0))
