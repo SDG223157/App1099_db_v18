@@ -296,9 +296,7 @@ class DataService:
         
         
     def get_financial_data(self, ticker: str, metric_description: str, start_year: str, end_year: str) -> pd.Series:
-        """
-        Get financial data from database first, if not exists then fetch from EODHD API and store it.
-        """
+        """Get financial data from database first, if not exists then fetch from EODHD API and store it."""
         cleaned_ticker = self.clean_ticker_for_table_name(ticker)
         table_name = f"roic_{cleaned_ticker}"
         values = {}
@@ -324,10 +322,6 @@ class DataService:
             # If not in database or incomplete, get from EODHD API
             logger.info(f"Getting financial data for {ticker} from EODHD API")
             
-            # Check EODHD API key
-            if not self.EODHD_API_KEY:
-                raise ValueError("EODHD API key not configured")
-            
             # Get data from EODHD
             eodhd_ticker = self.convert_to_eodhd_ticker(ticker)
             eodhd_url = f"{self.EODHD_BASE_URL}/fundamentals/{eodhd_ticker}?api_token={self.EODHD_API_KEY}&fmt=json"
@@ -337,75 +331,80 @@ class DataService:
                 raise ValueError(f"EODHD API request failed with status {response.status_code}")
             
             data = response.json()
+            logger.debug(f"EODHD Data Structure:")
+            logger.debug(f"Keys in root: {list(data.keys())}")
+            if 'Financials' in data:
+                logger.debug(f"Keys in Financials: {list(data['Financials'].keys())}")
             
             # Process the data
             financial_data = []
             metric_field = METRICS_MAP.get(metric_description)
             
-            if metric_field == 'eps':
-                # Get net income and shares data
-                income_data = data.get('Financials', {}).get('Income_Statement', {}).get('yearly', {})
-                shares_data = data.get('outstandingShares', {}).get('annual', {})
-                
-                # Process each year
-                for year in range(int(start_year), int(end_year) + 1):
-                    try:
-                        # Find net income for the year
-                        net_income = None
-                        for date, entry in income_data.items():
-                            if str(year) in date:  # Match the year
-                                net_income = float(entry.get('netIncome', 0))
-                                break
-                        
-                        # Find shares for the year
-                        shares = None
-                        for idx, entry in shares_data.items():
-                            date = entry.get('dateFormatted')
-                            if date and str(year) in date:
-                                shares = float(entry.get('shares', 0))
-                                break
-                        
-                        # Calculate EPS if we have both values
-                        if net_income is not None and shares and shares > 0:
-                            values[year] = net_income / shares
-                            financial_data.append({
-                                'fiscal_year': year,
-                                'period_label': 'FY',
-                                'period_end_date': f"{year}-12-31",
-                                'eps': net_income / shares
-                            })
-                            
-                    except Exception as e:
-                        logger.error(f"Error calculating EPS for {year}: {str(e)}")
-                        
-            else:  # Handle other metrics
-                # Get yearly financial data
-                income_data = data.get('Financials', {}).get('Income_Statement', {}).get('yearly', {})
-                balance_data = data.get('Financials', {}).get('Balance_Sheet', {}).get('yearly', {})
-                
-                for year in range(int(start_year), int(end_year) + 1):
-                    try:
-                        # Find data for the year
-                        for date, entry in income_data.items():
-                            if str(year) in date:
-                                year_data = {
-                                    'fiscal_year': year,
-                                    'period_label': 'FY',
-                                    'period_end_date': date
-                                }
-                                
-                                if metric_field == 'is_sh_for_diluted_eps':
-                                    shares = data.get('SharesStats', {}).get('SharesOutstanding', 0)
-                                    year_data['is_sh_for_diluted_eps'] = shares
-                                    values[year] = shares
-                                
-                                financial_data.append(year_data)
-                                break
-                                
-                    except Exception as e:
-                        logger.error(f"Error processing {metric_field} for {year}: {str(e)}")
+            # Get all required data
+            income_data = data.get('Financials', {}).get('Income_Statement', {}).get('yearly', {})
+            shares_data = data.get('outstandingShares', {}).get('annual', {})
+            balance_data = data.get('Financials', {}).get('Balance_Sheet', {}).get('yearly', {})
+            cash_flow_data = data.get('Financials', {}).get('Cash_Flow', {}).get('yearly', {})
+            
+            # Process each year
+            for year in range(int(start_year), int(end_year) + 1):
+                try:
+                    year_data = {
+                        'fiscal_year': year,
+                        'period_label': 'FY',
+                        'period_end_date': f"{year}-12-31"
+                    }
 
-            # Store the data in database
+                    # Get net income and revenue
+                    for date, entry in income_data.items():
+                        if str(year) in date:
+                            net_income = float(entry.get('netIncome', 0))
+                            revenue = float(entry.get('totalRevenue', 0))
+                            operating_income = float(entry.get('operatingIncome', 0))
+                            year_data['is_net_income'] = net_income
+                            year_data['is_sales_and_services_revenues'] = revenue
+                            if revenue > 0:
+                                year_data['oper_margin'] = float(f"{(operating_income / revenue * 100):.15f}")
+                            break
+
+                    # Get shares data
+                    for idx, entry in shares_data.items():
+                        date = entry.get('dateFormatted')
+                        if date and str(year) in date:
+                            shares = float(entry.get('shares', 0))
+                            year_data['is_sh_for_diluted_eps'] = shares
+                            # Calculate EPS
+                            if shares > 0 and 'is_net_income' in year_data:
+                                year_data['eps'] = year_data['is_net_income'] / shares
+                            break
+
+                    # Get cash flow data
+                    for date, entry in cash_flow_data.items():
+                        if str(year) in date:
+                            year_data['cf_cash_from_oper'] = float(entry.get('totalCashFromOperatingActivities', 0))
+                            year_data['cf_cap_expenditures'] = float(entry.get('capitalExpenditures', 0))
+                            break
+
+                    # Get balance sheet data and calculate ROIC
+                    for date, entry in balance_data.items():
+                        if str(year) in date:
+                            equity = float(entry.get('totalStockholderEquity', 0))
+                            debt = float(entry.get('totalLongTermDebt', 0))
+                            invested_capital = equity + debt
+                            if invested_capital > 0 and 'is_net_income' in year_data:
+                                year_data['return_on_inv_capital'] = float(f"{(year_data['is_net_income'] / invested_capital * 100):.15f}")
+                            break
+
+                    # Store the requested metric in values dict
+                    if metric_field in year_data:
+                        values[year] = year_data[metric_field]
+
+                    financial_data.append(year_data)
+
+                except Exception as e:
+                    logger.error(f"Error processing data for {year}: {str(e)}")
+
+            # Store all data in database
             if financial_data:
                 df = pd.DataFrame(financial_data)
                 self.store_dataframe(df, table_name)
@@ -415,7 +414,7 @@ class DataService:
 
         except Exception as e:
             logger.error(f"Error getting financial data for {ticker}: {str(e)}")
-            logger.error(f"Traceback: {traceback.format_exc()}")
+            logger.warning(f"EODHD API failed for {ticker}: Could not get {metric_description} from EODHD, trying database")
             return None
     
     def store_historical_data(self, ticker: str, start_date: str = None, end_date: str = None) -> bool:
