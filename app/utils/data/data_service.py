@@ -363,15 +363,18 @@ class DataService:
                     # Get net income and revenue
                     for date, entry in income_data.items():
                         if str(year) in date:
-                            net_income = float(entry.get('netIncome', 0))
-                            revenue = float(entry.get('totalRevenue', 0))
-                            operating_income = float(entry.get('operatingIncome', 0))
-                            # Only store if we have actual data (non-zero values)
-                            if net_income != 0 and revenue != 0:  # Changed from 'or' to 'and'
-                                year_data['is_net_income'] = net_income
-                                year_data['is_sales_and_services_revenues'] = revenue
-                                if revenue > 0:
-                                    year_data['oper_margin'] = float(f"{(operating_income / revenue * 100):.15f}")
+                            try:
+                                net_income = float(entry.get('netIncome') or 0)
+                                revenue = float(entry.get('totalRevenue') or 0)
+                                operating_income = float(entry.get('operatingIncome') or 0)
+                                # Only store if we have actual data (non-zero values)
+                                if net_income != 0 and revenue != 0:
+                                    year_data['is_net_income'] = net_income
+                                    year_data['is_sales_and_services_revenues'] = revenue
+                                    if revenue > 0:
+                                        year_data['oper_margin'] = float(f"{(operating_income / revenue * 100):.15f}")
+                            except (TypeError, ValueError) as e:
+                                logger.warning(f"Error processing income data for {year}: {str(e)}")
                             break
 
                     # Get shares data
@@ -384,7 +387,8 @@ class DataService:
                                 shares = self.get_shares_from_common_stock(common_stock, ticker)
                                 break
 
-                    if shares > 0 and 'is_net_income' in year_data:  # Only calculate EPS if we have both values
+                    # Calculate EPS only if we have valid shares and net income
+                    if shares and shares > 0 and 'is_net_income' in year_data:
                         year_data['is_sh_for_diluted_eps'] = shares
                         year_data['eps'] = year_data['is_net_income'] / shares
 
@@ -612,6 +616,7 @@ class DataService:
                 income_statements = data.get('Financials', {}).get('Income_Statement', {}).get('yearly', {})
                 balance_sheets = data.get('Financials', {}).get('Balance_Sheet', {}).get('yearly', {})
                 cash_flows = data.get('Financials', {}).get('Cash_Flow', {}).get('yearly', {})
+                shares_data = data.get('outstandingShares', {}).get('annual', {})
                 
                 # Process each year's data
                 for date in income_statements.keys():
@@ -1030,14 +1035,15 @@ class DataService:
             if not common_stock:
                 return 0
             
-            # Remove '.00' suffix and convert to float
-            shares = float(common_stock.replace('.00', ''))
+            # Handle string values that might contain commas or other formatting
+            clean_value = str(common_stock).replace(',', '').replace('.00', '')
+            shares = float(clean_value)
             
-            # For Chinese stocks (SZ, SS, HK), divide by 10000 to convert from total shares to millions
-            if any(suffix in ticker for suffix in ['.SZ', '.SS', '.HK']):
+            # For Chinese stocks (SZ, SS), divide by 10000 to convert from total shares to millions
+            if any(suffix in ticker for suffix in ['.SZ', '.SS']):
                 shares = shares / 10000  # Convert to millions
             
             return shares
         except (ValueError, AttributeError) as e:
-            logger.error(f"Error converting commonStock value: {str(e)}")
+            logger.error(f"Error converting commonStock value '{common_stock}': {str(e)}")
             return 0
