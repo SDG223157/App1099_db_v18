@@ -327,10 +327,15 @@ class DataService:
                 
                 response = requests.get(eodhd_url)
                 logger.debug(f"EODHD API Response status: {response.status_code}")
-                logger.debug(f"EODHD API Response content: {response.text[:200]}...")  # First 200 chars
                 
-                response.raise_for_status()
                 data = response.json()
+                # Add detailed logging of the data structure
+                logger.debug("EODHD Data Structure:")
+                logger.debug(f"Keys in root: {list(data.keys())}")
+                if 'Financials' in data:
+                    logger.debug(f"Keys in Financials: {list(data['Financials'].keys())}")
+                    if 'Highlights' in data['Financials']:
+                        logger.debug(f"Highlights structure: {data['Financials']['Highlights']}")
                 
                 if not data:
                     raise ValueError("Empty response from EODHD")
@@ -351,17 +356,38 @@ class DataService:
                 }
                 
                 if metric_field in ['eps', 'is_sh_for_diluted_eps']:
-                    # Handle Highlights data differently as it's structured differently
-                    yearly_data = data.get('Financials', {}).get('Highlights', {}).get('yearly', {})
-                    field_name = eodhd_field_map[metric_field][1]  # Get just the field name
+                    # Try different paths to find the data
+                    highlights = data.get('Financials', {}).get('Highlights', {})
+                    logger.debug(f"Full Highlights data: {highlights}")
+                    
+                    # Try both paths
+                    yearly_data = highlights.get('yearly', {})
+                    if not yearly_data:
+                        yearly_data = highlights  # Try direct access if 'yearly' doesn't exist
+                    
+                    logger.debug(f"Yearly data found: {yearly_data}")
                     
                     values = {}
-                    for date, highlights in yearly_data.items():
-                        year = datetime.strptime(date, '%Y-%m-%d').year
-                        if int(start_year) <= year <= int(end_year):
-                            value = float(highlights.get(field_name, 0))
-                            values[year] = value
-                            
+                    for date, highlight_data in yearly_data.items():
+                        logger.debug(f"Processing date {date}: {highlight_data}")
+                        try:
+                            year = datetime.strptime(date, '%Y-%m-%d').year
+                            if int(start_year) <= year <= int(end_year):
+                                if metric_field == 'eps':
+                                    # Try multiple possible field names
+                                    value = (highlight_data.get('EPS') or 
+                                           highlight_data.get('eps') or 
+                                           highlight_data.get('DilutedEPS') or 
+                                           highlight_data.get('dilutedEPS') or 0)
+                                else:  # is_sh_for_diluted_eps
+                                    value = (highlight_data.get('SharesOutstanding') or 
+                                           highlight_data.get('sharesOutstanding') or 
+                                           highlight_data.get('Shares') or 
+                                           highlight_data.get('DilutedShares') or 0)
+                                values[year] = float(value)
+                        except Exception as e:
+                            logger.error(f"Error processing highlight data for {date}: {str(e)}")
+                    
                     if values:
                         series = pd.Series(values, name=metric_description)
                         return series.sort_index(ascending=False)
@@ -675,13 +701,24 @@ class DataService:
                     # Get Income Statement data
                     income_stmt = income_statements.get(date, {})
                     # Get Highlights data for this specific year
-                    highlights = data.get('Financials', {}).get('Highlights', {}).get('yearly', {}).get(date, {})
+                    highlights = data.get('Financials', {}).get('Highlights', {})
+                    yearly_highlights = highlights.get('yearly', {}).get(date, {}) or highlights.get(date, {})
+                    
+                    # Try multiple possible field names for EPS and Shares
+                    eps_value = (yearly_highlights.get('EPS') or 
+                                yearly_highlights.get('eps') or 
+                                yearly_highlights.get('DilutedEPS') or 
+                                yearly_highlights.get('dilutedEPS') or 0)
+                    
+                    shares_value = (yearly_highlights.get('SharesOutstanding') or 
+                                   yearly_highlights.get('sharesOutstanding') or 
+                                   yearly_highlights.get('Shares') or 
+                                   yearly_highlights.get('DilutedShares') or 0)
                     
                     year_data['is_sales_and_services_revenues'] = float(income_stmt.get('totalRevenue', 0))
                     year_data['is_net_income'] = float(income_stmt.get('netIncome', 0))
-                    # Get EPS and shares from the yearly Highlights data
-                    year_data['eps'] = float(highlights.get('EPS', 0))
-                    year_data['is_sh_for_diluted_eps'] = float(highlights.get('SharesOutstanding', 0))
+                    year_data['eps'] = float(eps_value)
+                    year_data['is_sh_for_diluted_eps'] = float(shares_value)
                     
                     # Calculate Operating Margin
                     operating_income = float(income_stmt.get('operatingIncome', 0))
