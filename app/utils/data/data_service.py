@@ -350,8 +350,8 @@ class DataService:
             current_year = datetime.now().year
             for year in range(int(start_year), int(end_year) + 1):
                 try:
-                    # Skip future years
-                    if year > current_year:
+                    # Skip future years and current year (likely incomplete)
+                    if year >= current_year:
                         continue
 
                     year_data = {
@@ -367,7 +367,7 @@ class DataService:
                             revenue = float(entry.get('totalRevenue', 0))
                             operating_income = float(entry.get('operatingIncome', 0))
                             # Only store if we have actual data (non-zero values)
-                            if net_income != 0 or revenue != 0:
+                            if net_income != 0 and revenue != 0:  # Changed from 'or' to 'and'
                                 year_data['is_net_income'] = net_income
                                 year_data['is_sales_and_services_revenues'] = revenue
                                 if revenue > 0:
@@ -379,11 +379,9 @@ class DataService:
                         date = entry.get('dateFormatted')
                         if date and str(year) in date:
                             shares = float(entry.get('shares', 0))
-                            if shares > 0:  # Only store if we have actual data
+                            if shares > 0 and 'is_net_income' in year_data:  # Only calculate EPS if we have both values
                                 year_data['is_sh_for_diluted_eps'] = shares
-                                # Calculate EPS
-                                if 'is_net_income' in year_data:
-                                    year_data['eps'] = year_data['is_net_income'] / shares
+                                year_data['eps'] = year_data['is_net_income'] / shares
                             break
 
                     # Get cash flow data
@@ -391,7 +389,7 @@ class DataService:
                         if str(year) in date:
                             cf_oper = float(entry.get('totalCashFromOperatingActivities', 0))
                             cap_ex = float(entry.get('capitalExpenditures', 0))
-                            if cf_oper != 0 or cap_ex != 0:  # Only store if we have actual data
+                            if cf_oper != 0 and cap_ex != 0:  # Changed from 'or' to 'and'
                                 year_data['cf_cash_from_oper'] = cf_oper
                                 year_data['cf_cap_expenditures'] = cap_ex
                             break
@@ -401,17 +399,30 @@ class DataService:
                         if str(year) in date:
                             equity = float(entry.get('totalStockholderEquity', 0))
                             debt = float(entry.get('totalLongTermDebt', 0))
-                            invested_capital = equity + debt
-                            if invested_capital > 0 and 'is_net_income' in year_data:
-                                year_data['return_on_inv_capital'] = float(f"{(year_data['is_net_income'] / invested_capital * 100):.15f}")
+                            
+                            # Get operating income for ROIC calculation
+                            operating_income = None
+                            for income_date, income_entry in income_data.items():
+                                if str(year) in income_date:
+                                    operating_income = float(income_entry.get('operatingIncome', 0))
+                                    break
+                            
+                            # Calculate ROIC only if all required values are present
+                            if equity > 0 and operating_income and operating_income > 0:
+                                year_data['return_on_inv_capital'] = self.calculate_roic(
+                                    operating_income=operating_income,
+                                    equity=equity,
+                                    debt=debt
+                                )
                             break
 
-                    # Store the requested metric in values dict if it exists
-                    if metric_field in year_data:
+                    # Store the requested metric in values dict if it exists and is valid
+                    if metric_field in year_data and year_data[metric_field] != 0:
                         values[year] = year_data[metric_field]
 
-                    # Only append year_data if it contains actual data
-                    if len(year_data) > 3:  # More than just fiscal_year, period_label, and period_end_date
+                    # Only append year_data if it contains complete data
+                    required_fields = ['is_net_income', 'is_sales_and_services_revenues', 'eps']
+                    if all(field in year_data for field in required_fields):
                         financial_data.append(year_data)
 
                 except Exception as e:
@@ -485,34 +496,14 @@ class DataService:
             return False
     
     
-    def calculate_roic(self, income_stmt, balance_sheet, date):
-        """Calculate ROIC = (Operating Income - Tax) / (Total Assets - Total Current Liabilities)"""
+    def calculate_roic(self, operating_income: float, equity: float, debt: float) -> float:
+        """Calculate Return on Invested Capital"""
         try:
-            operating_income = 0
-            if 'Operating Income' in income_stmt.index:
-                operating_income = float(income_stmt.loc['Operating Income', date] or 0)
-            
-            income_tax = 0
-            if 'Income Tax Expense' in income_stmt.index:
-                income_tax = float(income_stmt.loc['Income Tax Expense', date] or 0)
-            
-            total_assets = 0
-            total_current_liabilities = 0
-            
-            if date in balance_sheet.columns:
-                if 'Total Assets' in balance_sheet.index:
-                    total_assets = float(balance_sheet.loc['Total Assets', date] or 0)
-                if 'Total Current Liabilities' in balance_sheet.index:
-                    total_current_liabilities = float(balance_sheet.loc['Total Current Liabilities', date] or 0)
-            
-            numerator = operating_income - income_tax
-            denominator = total_assets - total_current_liabilities
-            
-            if denominator and denominator != 0:
-                roic = (numerator / denominator) * 100
+            invested_capital = equity + debt
+            if invested_capital > 0:
+                roic = (operating_income / invested_capital) * 100
                 return float(f"{roic:.15f}")
             return 0.0
-            
         except Exception as e:
             logger.error(f"Error calculating ROIC: {str(e)}")
             return 0.0
@@ -797,7 +788,11 @@ class DataService:
                                     year_data['oper_margin'] = 0.0
                             
                             # Calculate ROIC
-                            year_data['return_on_inv_capital'] = self.calculate_roic(income_stmt, balance_sheet, date)
+                            year_data['return_on_inv_capital'] = self.calculate_roic(
+                                operating_income=operating_income,
+                                equity=float(balance_sheet.loc['Total Stockholder Equity', date] or 0),
+                                debt=float(balance_sheet.loc['Total Long Term Debt', date] or 0)
+                            )
                             
                             # Diluted Shares
                             if 'Diluted Average Shares' in income_stmt.index:
