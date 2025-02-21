@@ -65,7 +65,7 @@ class DataService:
         
         # Add EODHD configuration
         self.EODHD_API_KEY = os.getenv('EODHD_API_KEY')
-        self.EODHD_BASE_URL = "https://eodhd.com"
+        self.EODHD_BASE_URL = "https://eodhd.com/api"
         
         # Database configuration
         self.engine = create_engine(
@@ -322,7 +322,7 @@ class DataService:
                     raise ValueError(f"Unsupported ticker format: {ticker}")
                 
                 # Construct EODHD API URL
-                eodhd_url = f"{self.EODHD_BASE_URL}/api/v1/fundamentals/{eodhd_ticker}?api_token={self.EODHD_API_KEY}"
+                eodhd_url = f"{self.EODHD_BASE_URL}/fundamentals/{eodhd_ticker}?api_token={self.EODHD_API_KEY}&fmt=json"
                 logger.debug(f"EODHD API URL: {eodhd_url}")
                 
                 response = requests.get(eodhd_url)
@@ -604,7 +604,7 @@ class DataService:
                     raise ValueError(f"Unsupported ticker format: {ticker}")
                 
                 # Construct EODHD API URL
-                eodhd_url = f"{self.EODHD_BASE_URL}/api/v1/fundamentals/{eodhd_ticker}?api_token={self.EODHD_API_KEY}"
+                eodhd_url = f"{self.EODHD_BASE_URL}/fundamentals/{eodhd_ticker}?api_token={self.EODHD_API_KEY}&fmt=json"
                 
                 response = requests.get(eodhd_url)
                 response.raise_for_status()
