@@ -1,15 +1,11 @@
-# File: eodhd_finance.py
 
-import os
+
 import requests
 import pandas as pd
 from datetime import datetime
 from typing import Dict, Optional, Union, List, Any
 from enum import Enum
 from openpyxl.utils import get_column_letter
-import logging
-
-logger = logging.getLogger(__name__)
 
 class StatementType(Enum):
     BALANCE_SHEET = 'Balance_Sheet'
@@ -86,19 +82,18 @@ class FinancialMetrics:
     ]
 
 class Financials:
-    # Metric calculation type mappings
     METRIC_TYPES = {
         StatementType.BALANCE_SHEET: {
             'default': MetricType.LATEST,  # Default for Balance Sheet is latest value
             'commonStock': MetricType.AVERAGE,  # Common Stock should be averaged
             'commonStockSharesOutstanding': MetricType.AVERAGE  # Shares outstanding should be averaged
         },
-        StatementType.INCOME_STATEMENT: {  
+        StatementType.INCOME_STATEMENT: {
             'default': MetricType.SUM,  # Default for Income Statement is to sum
             'margin': MetricType.AVERAGE,  # Margins should be averaged
             'ratio': MetricType.AVERAGE
         },
-        StatementType.CASH_FLOW: {  
+        StatementType.CASH_FLOW: {
             'default': MetricType.SUM,  # Default for Cash Flow is to sum
             'endPeriodCashFlow': MetricType.LATEST,
             'beginPeriodCashFlow': MetricType.LATEST
@@ -106,51 +101,29 @@ class Financials:
     }
 
     def __init__(self, symbol: str, api_token: str):
-        """Initialize with symbol and convert to proper exchange format"""
-        self.original_symbol = symbol.upper()
+        self.symbol = symbol.upper()
         self._api_token = api_token
-        self._base_url = 'https://eodhd.com/api'
+        self._base_url = 'https://eodhd.com/api/fundamentals'
         self._data = None
         self._quarterly_data = {}
         self._annual_data = {}
-        
-        # Convert symbol to EODHD format
-        if '.' not in symbol:
-            # US stocks
-            self.symbol = f"{symbol.upper()}.US"
-        else:
-            # Convert Chinese exchange codes
-            code, exchange = symbol.upper().split('.')
-            if exchange == 'SS':
-                self.symbol = f"{code}.SHG"  # Shanghai
-            elif exchange == 'SZ':
-                self.symbol = f"{code}.SHE"  # Shenzhen
-            else:
-                self.symbol = symbol.upper()
 
     def _fetch_data(self) -> None:
         """Fetch financial data from EODHD API"""
         try:
-            # Use direct URL format that works
-            url = f'https://eodhd.com/api/fundamentals/{self.symbol}?api_token={self._api_token}&fmt=json'
+            url = f'{self._base_url}/{self.symbol}?api_token={self._api_token}&fmt=json'
             response = requests.get(url)
             response.raise_for_status()
             self._data = response.json()
-            
-            # Check if we got valid data
-            if self._data and isinstance(self._data, dict):
-                self._process_all_statements()
-            else:
-                logger.error(f"Invalid data format received for {self.symbol}")
-                self._data = None
+            self._process_all_statements()
         except requests.exceptions.RequestException as e:
-            logger.error(f"Error fetching data: {e}")
+            print(f"Error fetching data: {e}")
             self._data = None
 
     def _get_metric_calculation_type(self, statement_type: StatementType, metric: str) -> MetricType:
         """Determine how to calculate annual value for a metric"""
         metric_types = self.METRIC_TYPES[statement_type]
-        
+
         if isinstance(metric_types, dict):
             # Check for specific metric type
             if metric in metric_types:
@@ -158,7 +131,7 @@ class Financials:
             # Return default if specified
             if 'default' in metric_types:
                 return metric_types['default']
-        
+
         # If metric_types is not a dict, it's a direct MetricType
         return metric_types
 
@@ -172,7 +145,7 @@ class Financials:
                 df = pd.DataFrame(self._data)
                 financials = df.loc[statement_type.value, 'Financials']
                 df_financials = pd.DataFrame(financials)
-                
+
                 # Process quarterly data
                 quarters_by_year = {}
                 for date in df_financials.index:
@@ -191,7 +164,7 @@ class Financials:
                         print(f"Skipping date {date} for {statement_type.value}: {e}")
                         continue
 
-                # Process and store quarterly data
+                # Store quarterly data
                 self._quarterly_data[statement_type] = []
                 annual_data = {}
 
@@ -199,19 +172,14 @@ class Financials:
                 for year in sorted(quarters_by_year.keys(), reverse=True):
                     quarters = sorted(quarters_by_year[year], key=lambda x: x['date'], reverse=True)
                     self._quarterly_data[statement_type].extend(quarters)
-                    
+
                     if len(quarters) == 4:  # Only calculate annual for complete years
                         annual_metrics = {}
-                        
-                        # Get all metrics from first quarter
                         sample_data = quarters[0]['data']
-                        
+
                         for metric in sample_data.keys():
                             try:
-                                # Get calculation type for this metric
                                 calc_type = self._get_metric_calculation_type(statement_type, metric)
-                                
-                                # Get values for all quarters
                                 values = []
                                 for q in quarters:
                                     value = q['data'].get(metric)
@@ -220,7 +188,7 @@ class Financials:
                                             values.append(float(value))
                                         except (ValueError, TypeError):
                                             values.append(0)
-                                
+
                                 if values:
                                     if calc_type == MetricType.SUM:
                                         annual_metrics[metric] = sum(values)
@@ -230,16 +198,16 @@ class Financials:
                                         annual_metrics[metric] = values[0]
                                 else:
                                     annual_metrics[metric] = None
-                                    
+
                             except Exception as e:
                                 print(f"Error calculating {metric}: {e}")
                                 annual_metrics[metric] = None
-                        
+
                         annual_data[year] = annual_metrics
 
                 self._annual_data[statement_type] = annual_data
                 print(f"{statement_type.value} Data processed successfully")
-                
+
                 # Save to Excel
                 self._save_to_excel(
                     f"{self.symbol.lower()}_{statement_type.value.lower()}.xlsx",
@@ -249,7 +217,7 @@ class Financials:
 
             except Exception as e:
                 print(f"Error processing {statement_type.value}: {e}")
-                
+
     def _save_to_excel(self, filename: str, quarterly_data: List[Dict], annual_data: Dict) -> None:
         """Save financial data to Excel"""
         try:
@@ -259,15 +227,15 @@ class Financials:
             # Create DataFrame from quarterly data all at once
             metrics = list(quarterly_data[0]['data'].keys())
             data_dict = {}
-            
+
             # Prepare all data first
             for quarter in quarterly_data:
                 date = quarter['date'].strftime('%Y-%m-%d')
                 data_dict[date] = {metric: quarter['data'].get(metric) for metric in metrics}
-            
+
             # Create DataFrame in one go
             df_quarterly = pd.DataFrame(data_dict).T
-            
+
             # Transpose to get metrics as rows and dates as columns
             df_quarterly = df_quarterly.T
 
@@ -279,15 +247,15 @@ class Financials:
                 df_quarterly.to_excel(writer, sheet_name='Quarterly')
                 if df_annual is not None:
                     df_annual.to_excel(writer, sheet_name='Annual')
-                
+
                 # Format worksheets
                 for sheet_name in ['Quarterly', 'Annual']:
                     if sheet_name == 'Annual' and df_annual is None:
                         continue
-                        
+
                     worksheet = writer.sheets[sheet_name]
                     df = df_quarterly if sheet_name == 'Quarterly' else df_annual
-                    
+
                     # Adjust column widths
                     for idx, col in enumerate(df.columns, start=1):
                         column_letter = get_column_letter(idx + 1)
@@ -296,7 +264,7 @@ class Financials:
                             len(str(col))
                         )
                         worksheet.column_dimensions[column_letter].width = max_length + 2
-                    
+
                     # Adjust index column width
                     max_index_length = max(len(str(idx)) for idx in df.index)
                     worksheet.column_dimensions['A'].width = max_index_length + 2
@@ -305,14 +273,14 @@ class Financials:
         except Exception as e:
             print(f"Error saving to Excel: {e}")
 
-    def get_metric(self, 
-                  statement_type: Union[str, StatementType],
-                  metric: str,
-                  year: Optional[Union[str, int]] = None,
-                  freq: str = 'quarterly') -> Union[float, Dict[str, float], None]:
+    def get_metric(self,
+                   statement_type: Union[str, StatementType],
+                   metric: str,
+                   year: Optional[Union[str, int]] = None,
+                   freq: str = 'quarterly') -> Union[float, Dict[str, float], None]:
         """
-        Get specific metric value for a given year/quarter
-        
+        Get specific metric value
+
         Parameters:
         -----------
         statement_type : str or StatementType
@@ -326,7 +294,7 @@ class Financials:
         """
         if isinstance(statement_type, str):
             statement_type = StatementType(statement_type)
-            
+
         if not self._quarterly_data:
             self._fetch_data()
 
@@ -343,31 +311,77 @@ class Financials:
 
         if statement_type not in self._quarterly_data:
             return None
-            
+
         result = {}
         for quarter in self._quarterly_data[statement_type]:
             if metric in quarter['data']:
                 result[quarter['date'].strftime('%Y-%m-%d')] = quarter['data'][metric]
-                
+
         if not result:
             return None
-            
+
         if year:
             year_str = str(year)
             return {
-                date: value 
-                for date, value in result.items() 
+                date: value
+                for date, value in result.items()
                 if date.startswith(year_str)
             }
         return result
 
-    def get_all_metrics(self, 
-                       statement_type: Union[str, StatementType],
-                       year: Optional[Union[str, int]] = None,
-                       freq: str = 'annual') -> Union[Dict[str, Any], Dict[str, Dict[str, Any]], None]:
+    def export_statements_to_excel(self, prefix: str = None) -> None:
         """
-        Get all metrics for a statement type
-        
+        Export all financial statements to separate Excel files
+
+        Parameters:
+        -----------
+        prefix : str, optional
+            Prefix for Excel filenames (default: lowercase symbol)
+        """
+        if not self._quarterly_data:
+            self._fetch_data()
+
+        if prefix is None:
+            prefix = self.symbol.lower()
+
+        statements = {
+            'Balance_Sheet': f'{prefix}_balance_sheet.xlsx',
+            'Cash_Flow': f'{prefix}_cash_flow.xlsx',
+            'Income_Statement': f'{prefix}_income_statement.xlsx'
+        }
+
+        print("\nExporting financial statements to Excel:")
+        print("-" * 40)
+
+        for statement_type, filename in statements.items():
+            try:
+                # Get quarterly and annual data
+                quarterly_data = []
+                annual_data = {}
+
+                st = StatementType(statement_type)
+                if st in self._quarterly_data:
+                    quarterly_data = self._quarterly_data[st]
+                if st in self._annual_data:
+                    annual_data = self._annual_data[st]
+
+                if quarterly_data:
+                    self._save_to_excel(filename, quarterly_data, annual_data)
+                    print(f"✓ Created {filename}")
+                else:
+                    print(f"✗ No data available for {statement_type}")
+            except Exception as e:
+                print(f"✗ Error creating {filename}: {e}")
+
+        print("\nExport complete!")
+
+    def get_all_metrics(self,
+                        statement_type: Union[str, StatementType],
+                        year: Optional[Union[str, int]] = None,
+                        freq: str = 'annual') -> Union[Dict[str, Any], Dict[str, Dict[str, Any]], None]:
+        """
+        Get all metrics
+
         Parameters:
         -----------
         statement_type : str or StatementType
@@ -379,14 +393,14 @@ class Financials:
         """
         if isinstance(statement_type, str):
             statement_type = StatementType(statement_type)
-            
+
         if not self._quarterly_data:
             self._fetch_data()
 
         if freq == 'annual':
             if statement_type not in self._annual_data:
                 return None
-                
+
             if year:
                 year_int = int(year)
                 return self._annual_data[statement_type].get(year_int)
@@ -394,7 +408,7 @@ class Financials:
 
         if statement_type not in self._quarterly_data:
             return None
-            
+
         if year:
             year_str = str(year)
             return {
@@ -402,93 +416,10 @@ class Financials:
                 for quarter in self._quarterly_data[statement_type]
                 if str(quarter['date'].year) == year_str
             }
-            
+
         return {
             quarter['date'].strftime('%Y-%m-%d'): quarter['data']
             for quarter in self._quarterly_data[statement_type]
         }
 
-def export_statements_to_excel(self, prefix: str = None) -> None:
-    """
-    Export all financial statements to separate Excel files
-    
-    Parameters:
-    -----------
-    prefix : str, optional
-        Prefix for Excel filenames (default: lowercase symbol)
-    """
-    if not self._quarterly_data:
-        self._fetch_data()
-        
-    if prefix is None:
-        prefix = self.symbol.lower()
-
-    statements = {
-        'Balance_Sheet': f'{prefix}_balance_sheet.xlsx',
-        'Cash_Flow': f'{prefix}_cash_flow.xlsx',
-        'Income_Statement': f'{prefix}_income_statement.xlsx'
-    }
-
-    print("\nExporting financial statements to Excel:")
-    print("-" * 40)
-
-    for statement_type, filename in statements.items():
-        try:
-            # Get quarterly and annual data
-            quarterly_data = []
-            annual_data = {}
-            
-            st = StatementType(statement_type)
-            if st in self._quarterly_data:
-                quarterly_data = self._quarterly_data[st]
-            if st in self._annual_data:
-                annual_data = self._annual_data[st]
-
-            if quarterly_data:
-                self._save_to_excel(filename, quarterly_data, annual_data)
-                print(f"✓ Created {filename}")
-            else:
-                print(f"✗ No data available for {statement_type}")
-        except Exception as e:
-            print(f"✗ Error creating {filename}: {e}")
-
-    print("\nExport complete!")
-
-def main():
     """Example usage"""
-    api_token = '63f394f93dbbb6.58792646'  # Replace with your API token
-    symbol = 'AAPL'
-    year = '2024'
-    
-    # Initialize
-    fin = Financials(symbol, api_token)
-    
-    print(f"\n{'='*50}")
-    print(f"Financial Analysis for {symbol} - {year}")
-    print(f"{'='*50}")
-
-    # Print all metrics by statement type
-    statement_types = {
-        'INCOME STATEMENT': (StatementType.INCOME_STATEMENT, FinancialMetrics.INCOME_STATEMENT_METRICS),
-        'BALANCE SHEET': (StatementType.BALANCE_SHEET, FinancialMetrics.BALANCE_SHEET_METRICS),
-        'CASH FLOW': (StatementType.CASH_FLOW, FinancialMetrics.CASH_FLOW_METRICS)
-    }
-
-    for title, (statement_type, metrics) in statement_types.items():
-        print(f"\n{title}:")
-        print("-" * 50)
-        
-        for metric in metrics:
-            value = fin.get_metric(statement_type, metric, year)
-            if value:
-                for date, metric_value in value.items():
-                    try:
-                        if isinstance(metric_value, (int, float)):
-                            print(f"{metric.ljust(35)} ({date}): ${float(metric_value):,.2f}")
-                        else:
-                            print(f"{metric.ljust(35)} ({date}): {metric_value}")
-                    except Exception as e:
-                        print(f"{metric.ljust(35)} ({date}): Error - {e}")
-
-if __name__ == "__main__":
-    main()             

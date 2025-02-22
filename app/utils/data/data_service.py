@@ -344,6 +344,14 @@ class DataService:
             financials = Financials(ticker, self.EODHD_API_KEY)
             financials._fetch_data()
 
+            # Get earliest available shares value
+            earliest_shares = None
+            for year in range(int(start_year), int(end_year) + 1):
+                shares = financials.get_metric('Balance_Sheet', 'commonStockSharesOutstanding', str(year), freq='annual')
+                if shares:
+                    earliest_shares = float(shares)
+                    break
+
             # Process each year's data
             financial_data = []
             for year in range(int(start_year), int(end_year) + 1):
@@ -368,6 +376,10 @@ class DataService:
                         if operating_income and revenue:
                             year_data[METRICS_MAP['operating margin']] = (float(operating_income) / float(revenue)) * 100
 
+                        # Use earliest shares value for any missing year
+                        if not shares and earliest_shares:
+                            shares = earliest_shares
+                            
                         if shares:
                             year_data[METRICS_MAP['diluted shares']] = float(shares)
                             year_data[METRICS_MAP['earnings per share']] = float(net_income) / float(shares)
