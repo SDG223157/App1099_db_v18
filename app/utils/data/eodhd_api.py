@@ -127,15 +127,25 @@ class Financials:
     def _fetch_data(self) -> None:
         """Fetch financial data from EODHD API"""
         try:
-            # Use the converted symbol here
             url = f'{self._base_url}/{self.symbol}?api_token={self._api_token}&fmt=json'
             logger.info(f"Fetching data for {self.original_symbol} (converted to {self.symbol})")
             response = requests.get(url)
             response.raise_for_status()
             self._data = response.json()
+            
+            # Log response structure
+            logger.info(f"Response received with keys: {list(self._data.keys()) if self._data else 'No data'}")
+            
+            if not self._data:
+                logger.error("Empty response from API")
+                return
+            
             self._process_all_statements()
         except requests.exceptions.RequestException as e:
             logger.error(f"Error fetching data: {e}")
+            self._data = None
+        except ValueError as e:
+            logger.error(f"Error parsing JSON response: {e}")
             self._data = None
 
     def _get_metric_calculation_type(self, statement_type: StatementType, metric: str) -> MetricType:
@@ -156,20 +166,31 @@ class Financials:
     def _process_all_statements(self) -> None:
         """Process all financial statements into quarterly and annual data"""
         if not self._data:
+            logger.error("No data received from API")
             return
+
+        logger.info(f"Raw data keys: {self._data.keys()}")  # Debug raw data
 
         for statement_type in StatementType:
             try:
-                df = pd.DataFrame(self._data)
-                financials = df.loc[statement_type.value, 'Financials']
-                df_financials = pd.DataFrame(financials)
+                logger.info(f"Processing {statement_type.value}")
+                
+                # Check if statement exists in data
+                if statement_type.value not in self._data:
+                    logger.warning(f"{statement_type.value} not found in data")
+                    continue
+                
+                financials = self._data[statement_type.value].get('Financials', {})
+                if not financials:
+                    logger.warning(f"No financials found for {statement_type.value}")
+                    continue
 
                 # Process quarterly data
                 quarters_by_year = {}
-                for date in df_financials.index:
+                for date, data in financials.items():
                     try:
-                        quarterly_data = df_financials.loc[date, "quarterly"]
-                        if quarterly_data and isinstance(quarterly_data, dict):
+                        quarterly_data = data.get("quarterly", {})
+                        if quarterly_data:
                             date_obj = pd.to_datetime(date)
                             year = date_obj.year
                             if year not in quarters_by_year:
@@ -179,7 +200,7 @@ class Financials:
                                 'data': quarterly_data
                             })
                     except Exception as e:
-                        print(f"Skipping date {date} for {statement_type.value}: {e}")
+                        logger.error(f"Error processing date {date}: {str(e)}")
                         continue
 
                 # Store quarterly data
