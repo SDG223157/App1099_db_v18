@@ -170,24 +170,31 @@ class Financials:
             return
 
         logger.info(f"Raw data keys: {self._data.keys()}")  # Debug raw data
+        
+        if 'Financials' not in self._data:
+            logger.error("No Financials data in response")
+            return
+        
+        financials = self._data['Financials']
+        logger.info(f"Financials keys: {list(financials.keys())}")
 
         for statement_type in StatementType:
             try:
                 logger.info(f"Processing {statement_type.value}")
                 
-                # Check if statement exists in data
-                if statement_type.value not in self._data:
-                    logger.warning(f"{statement_type.value} not found in data")
+                # Check if statement exists in financials data
+                if statement_type.value not in financials:
+                    logger.warning(f"{statement_type.value} not found in financials")
                     continue
                 
-                financials = self._data[statement_type.value].get('Financials', {})
-                if not financials:
-                    logger.warning(f"No financials found for {statement_type.value}")
+                statement_data = financials[statement_type.value]
+                if not statement_data:
+                    logger.warning(f"No data found for {statement_type.value}")
                     continue
 
                 # Process quarterly data
                 quarters_by_year = {}
-                for date, data in financials.items():
+                for date, data in statement_data.items():
                     try:
                         quarterly_data = data.get("quarterly", {})
                         if quarterly_data:
