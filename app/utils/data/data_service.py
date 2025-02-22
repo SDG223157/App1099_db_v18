@@ -342,6 +342,23 @@ class DataService:
             # Initialize EODHD API
             financials = Financials(ticker, self.API_KEY)
             
+            # Define metrics to fetch
+            income_metrics = [
+                'totalRevenue', 'costOfRevenue', 'grossProfit', 'operatingIncome',
+                'netIncome', 'ebitda', 'researchDevelopment', 'sellingGeneralAdministrative'
+            ]
+            
+            balance_metrics = [
+                'totalAssets', 'totalCurrentAssets', 'cashAndEquivalents',
+                'totalLiab', 'totalCurrentLiabilities', 'longTermDebt',
+                'totalStockholderEquity', 'retainedEarnings', 'commonStock'
+            ]
+            
+            cash_flow_metrics = [
+                'totalCashFromOperatingActivities', 'capitalExpenditures',
+                'freeCashFlow', 'dividendsPaid', 'netBorrowings'
+            ]
+
             # Process each year's data
             financial_data = []
             for year in range(int(start_year), int(end_year) + 1):
@@ -353,39 +370,36 @@ class DataService:
                         'period_end_date': f"{year}-12-31"
                     }
 
-                    # Get Income Statement data
-                    net_income = financials.get_metric(StatementType.INCOME_STATEMENT, 'netIncome', year_str)
-                    revenue = financials.get_metric(StatementType.INCOME_STATEMENT, 'totalRevenue', year_str)
-                    operating_income = financials.get_metric(StatementType.INCOME_STATEMENT, 'operatingIncome', year_str)
+                    # Get Income Statement metrics
+                    for metric in income_metrics:
+                        value = financials.get_metric(StatementType.INCOME_STATEMENT, metric, year_str)
+                        if value:
+                            latest_date = max(value.keys())
+                            year_data[f'is_{metric}'] = float(value[latest_date])
 
-                    if net_income and revenue:
-                        latest_date = max(net_income.keys())
-                        year_data['is_net_income'] = float(net_income[latest_date])
-                        year_data['is_sales_and_services_revenues'] = float(revenue[latest_date])
-                        if operating_income:
-                            year_data['oper_margin'] = float(operating_income[latest_date])
+                    # Get Balance Sheet metrics
+                    for metric in balance_metrics:
+                        value = financials.get_metric(StatementType.BALANCE_SHEET, metric, year_str)
+                        if value:
+                            latest_date = max(value.keys())
+                            year_data[f'bs_{metric}'] = float(value[latest_date])
 
-                    # Get Balance Sheet data for shares
-                    common_stock = financials.get_metric(StatementType.BALANCE_SHEET, 'commonStock', year_str)
-                    if common_stock:
-                        latest_date = max(common_stock.keys())
-                        shares = self.get_shares_from_common_stock(str(common_stock[latest_date]), ticker)
+                    # Get Cash Flow metrics
+                    for metric in cash_flow_metrics:
+                        value = financials.get_metric(StatementType.CASH_FLOW, metric, year_str)
+                        if value:
+                            latest_date = max(value.keys())
+                            year_data[f'cf_{metric}'] = float(value[latest_date])
+
+                    # Calculate EPS if we have net income and shares
+                    if 'is_netIncome' in year_data and 'bs_commonStock' in year_data:
+                        shares = self.get_shares_from_common_stock(str(year_data['bs_commonStock']), ticker)
                         if shares > 0:
                             year_data['is_sh_for_diluted_eps'] = shares
-                            if 'is_net_income' in year_data:
-                                year_data['eps'] = year_data['is_net_income'] / shares
+                            year_data['eps'] = year_data['is_netIncome'] / shares
 
-                    # Get Cash Flow data
-                    cf_oper = financials.get_metric(StatementType.CASH_FLOW, 'totalCashFromOperatingActivities', year_str)
-                    cap_ex = financials.get_metric(StatementType.CASH_FLOW, 'capitalExpenditures', year_str)
-                    
-                    if cf_oper and cap_ex:
-                        latest_date = max(cf_oper.keys())
-                        year_data['cf_cash_from_oper'] = float(cf_oper[latest_date])
-                        year_data['cf_cap_expenditures'] = float(cap_ex[latest_date])
-
-                    # Calculate ROIC
-                    if all(key in year_data for key in ['is_net_income', 'is_sales_and_services_revenues']):
+                    # Add to financial data if we have basic metrics
+                    if 'is_netIncome' in year_data and 'is_totalRevenue' in year_data:
                         financial_data.append(year_data)
 
                 except Exception as e:
