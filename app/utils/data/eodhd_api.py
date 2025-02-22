@@ -103,12 +103,27 @@ class Financials:
     }
 
     def __init__(self, symbol: str, api_token: str):
-        self.symbol = symbol.upper()
+        """Initialize with symbol and convert to proper exchange format"""
+        self.original_symbol = symbol.upper()
         self._api_token = os.getenv('EODHD_API_TOKEN')
         self._base_url = 'https://eodhd.com/api'
         self._data = None
         self._quarterly_data = {}
         self._annual_data = {}
+        
+        # Convert symbol to EODHD format
+        if '.' not in symbol:
+            # US stocks
+            self.symbol = f"{symbol.upper()}.US"
+        else:
+            # Convert Chinese exchange codes
+            code, exchange = symbol.upper().split('.')
+            if exchange == 'SS':
+                self.symbol = f"{code}.SHG"  # Shanghai
+            elif exchange == 'SZ':
+                self.symbol = f"{code}.SHE"  # Shenzhen
+            else:
+                self.symbol = symbol.upper()
 
     def _fetch_data(self) -> None:
         """Fetch financial data from EODHD API"""
