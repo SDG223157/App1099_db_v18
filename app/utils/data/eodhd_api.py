@@ -1,5 +1,6 @@
 # File: eodhd_finance.py
 
+import os
 import requests
 import pandas as pd
 from datetime import datetime
@@ -99,7 +100,7 @@ class Financials:
 
     def __init__(self, symbol: str, api_token: str):
         self.symbol = symbol.upper()
-        self._api_token = api_token
+        self._api_token = os.getenv('EODHD_API_KEY')
         self._base_url = 'https://eodhd.com/api'
         self._data = None
         self._quarterly_data = {}
