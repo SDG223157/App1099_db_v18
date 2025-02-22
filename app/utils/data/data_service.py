@@ -341,7 +341,7 @@ class DataService:
 
             # Initialize EODHD API and fetch data
             financials = Financials(ticker, self.API_KEY)
-            financials._fetch_data()  # Ensure data is fetched
+            financials._fetch_data()
 
             # Process each year's data
             financial_data = []
@@ -354,27 +354,29 @@ class DataService:
                         'period_end_date': f"{year}-12-31"
                     }
 
-                    # Get metrics using the API methods
-                    revenue = financials.get_metric('Income_Statement', 'totalRevenue', year_str)
-                    net_income = financials.get_metric('Income_Statement', 'netIncome', year_str)
-                    operating_income = financials.get_metric('Income_Statement', 'operatingIncome', year_str)
-                    common_stock = financials.get_metric('Balance_Sheet', 'commonStock', year_str)
+                    # Get Income Statement metrics
+                    revenue = financials.get_metric(StatementType.INCOME_STATEMENT, 'totalRevenue', year_str)
+                    net_income = financials.get_metric(StatementType.INCOME_STATEMENT, 'netIncome', year_str)
+                    operating_income = financials.get_metric(StatementType.INCOME_STATEMENT, 'operatingIncome', year_str)
 
                     if revenue and net_income:
-                        year_data[METRICS_MAP['total revenues']] = float(list(revenue.values())[0])
-                        year_data[METRICS_MAP['net income']] = float(list(net_income.values())[0])
+                        # Get the first value for each metric (yearly data)
+                        year_data[METRICS_MAP['total revenues']] = float(next(iter(revenue.values())))
+                        year_data[METRICS_MAP['net income']] = float(next(iter(net_income.values())))
                         
                         if operating_income:
-                            op_income = float(list(operating_income.values())[0])
-                            rev = float(list(revenue.values())[0])
+                            op_income = float(next(iter(operating_income.values())))
+                            rev = float(next(iter(revenue.values())))
                             if rev > 0:
                                 year_data[METRICS_MAP['operating margin']] = (op_income / rev) * 100
 
-                        if common_stock:
-                            shares = self.get_shares_from_common_stock(str(list(common_stock.values())[0]), ticker)
-                            if shares > 0:
-                                year_data[METRICS_MAP['diluted shares']] = shares
-                                year_data[METRICS_MAP['earnings per share']] = year_data[METRICS_MAP['net income']] / shares
+                        # Get shares from Balance Sheet
+                        shares = financials.get_metric(StatementType.BALANCE_SHEET, 'commonStock', year_str)
+                        if shares:
+                            share_count = self.get_shares_from_common_stock(str(next(iter(shares.values()))), ticker)
+                            if share_count > 0:
+                                year_data[METRICS_MAP['diluted shares']] = share_count
+                                year_data[METRICS_MAP['earnings per share']] = year_data[METRICS_MAP['net income']] / share_count
 
                         financial_data.append(year_data)
 
