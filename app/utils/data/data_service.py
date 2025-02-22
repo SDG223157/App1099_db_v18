@@ -60,6 +60,7 @@ class DataService:
     def __init__(self):
         """Initialize DataService with API and database configuration"""
         self.API_KEY = "a365bff224a6419fac064dd52e1f80d9"
+        self.EODHD_API_KEY = os.getenv('EODHD_API_KEY')
         self.BASE_URL = "https://api.roic.ai/v1/rql"
         self.METRICS = METRICS_MAP
         self.CAGR_METRICS = CAGR_METRICS
@@ -340,7 +341,7 @@ class DataService:
                 start_year = str(current_year - 10)
 
             # Initialize EODHD API and fetch data
-            financials = Financials(ticker, self.API_KEY)
+            financials = Financials(ticker, self.EODHD_API_KEY)
             financials._fetch_data()
 
             # Process each year's data

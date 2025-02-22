@@ -105,7 +105,7 @@ class Financials:
     def __init__(self, symbol: str, api_token: str):
         """Initialize with symbol and convert to proper exchange format"""
         self.original_symbol = symbol.upper()
-        self._api_token = os.getenv('EODHD_API_TOKEN')
+        self._api_token = api_token
         self._base_url = 'https://eodhd.com/api'
         self._data = None
         self._quarterly_data = {}
