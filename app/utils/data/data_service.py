@@ -354,34 +354,23 @@ class DataService:
                         'period_end_date': f"{year}-12-31"
                     }
 
-                    # Get yearly data from Financials
-                    df = pd.DataFrame(financials._data)
-                    yearly_income = df.loc['Income_Statement', 'Financials'].get('yearly', {})
-                    yearly_balance = df.loc['Balance_Sheet', 'Financials'].get('yearly', {})
+                    # Get annual metrics
+                    revenue = financials.get_metric('Income_Statement', 'totalRevenue', year_str, freq='annual')
+                    net_income = financials.get_metric('Income_Statement', 'netIncome', year_str, freq='annual')
+                    operating_income = financials.get_metric('Income_Statement', 'operatingIncome', year_str, freq='annual')
+                    shares = financials.get_metric('Balance_Sheet', 'commonStockSharesOutstanding', year_str, freq='annual')
 
-                    # Find data for this year
-                    for date, data in yearly_income.items():
-                        if str(year) in date:
-                            if data.get('totalRevenue'):
-                                year_data[METRICS_MAP['total revenues']] = float(data['totalRevenue'])
-                            if data.get('netIncome'):
-                                year_data[METRICS_MAP['net income']] = float(data['netIncome'])
-                            if data.get('operatingIncome') and data.get('totalRevenue'):
-                                op_margin = (float(data['operatingIncome']) / float(data['totalRevenue'])) * 100
-                                year_data[METRICS_MAP['operating margin']] = op_margin
-                            break
+                    if revenue and net_income:
+                        year_data[METRICS_MAP['total revenues']] = float(revenue)
+                        year_data[METRICS_MAP['net income']] = float(net_income)
+                        
+                        if operating_income and revenue:
+                            year_data[METRICS_MAP['operating margin']] = (float(operating_income) / float(revenue)) * 100
 
-                    # Get shares from Balance Sheet yearly data
-                    for date, data in yearly_balance.items():
-                        if str(year) in date:
-                            if data.get('commonStock') and 'is_net_income' in year_data:
-                                shares = self.get_shares_from_common_stock(str(data['commonStock']), ticker)
-                                if shares > 0:
-                                    year_data[METRICS_MAP['diluted shares']] = shares
-                                    year_data[METRICS_MAP['earnings per share']] = year_data['is_net_income'] / shares
-                            break
+                        if shares:
+                            year_data[METRICS_MAP['diluted shares']] = float(shares)
+                            year_data[METRICS_MAP['earnings per share']] = float(net_income) / float(shares)
 
-                    if all(key in year_data for key in [METRICS_MAP['total revenues'], METRICS_MAP['net income']]):
                         financial_data.append(year_data)
 
                 except Exception as e:
