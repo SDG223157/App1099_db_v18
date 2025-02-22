@@ -342,23 +342,6 @@ class DataService:
             # Initialize EODHD API
             financials = Financials(ticker, self.API_KEY)
             
-            # Define metrics to fetch
-            income_metrics = [
-                'totalRevenue', 'costOfRevenue', 'grossProfit', 'operatingIncome',
-                'netIncome', 'ebitda', 'researchDevelopment', 'sellingGeneralAdministrative'
-            ]
-            
-            balance_metrics = [
-                'totalAssets', 'totalCurrentAssets', 'cashAndEquivalents',
-                'totalLiab', 'totalCurrentLiabilities', 'longTermDebt',
-                'totalStockholderEquity', 'retainedEarnings', 'commonStock'
-            ]
-            
-            cash_flow_metrics = [
-                'totalCashFromOperatingActivities', 'capitalExpenditures',
-                'freeCashFlow', 'dividendsPaid', 'netBorrowings'
-            ]
-
             # Process each year's data
             financial_data = []
             for year in range(int(start_year), int(end_year) + 1):
@@ -370,36 +353,48 @@ class DataService:
                         'period_end_date': f"{year}-12-31"
                     }
 
-                    # Get Income Statement metrics
-                    for metric in income_metrics:
-                        value = financials.get_metric(StatementType.INCOME_STATEMENT, metric, year_str)
-                        if value:
-                            latest_date = max(value.keys())
-                            year_data[f'is_{metric}'] = float(value[latest_date])
+                    # Get metrics based on METRICS_MAP
+                    # Total Revenues
+                    revenue = financials.get_metric('Income_Statement', 'totalRevenue', year_str)
+                    if revenue:
+                        latest_date = max(revenue.keys())
+                        year_data[METRICS_MAP['total revenues']] = float(revenue[latest_date])
 
-                    # Get Balance Sheet metrics
-                    for metric in balance_metrics:
-                        value = financials.get_metric(StatementType.BALANCE_SHEET, metric, year_str)
-                        if value:
-                            latest_date = max(value.keys())
-                            year_data[f'bs_{metric}'] = float(value[latest_date])
+                    # Net Income
+                    net_income = financials.get_metric('Income_Statement', 'netIncome', year_str)
+                    if net_income:
+                        latest_date = max(net_income.keys())
+                        year_data[METRICS_MAP['net income']] = float(net_income[latest_date])
 
-                    # Get Cash Flow metrics
-                    for metric in cash_flow_metrics:
-                        value = financials.get_metric(StatementType.CASH_FLOW, metric, year_str)
-                        if value:
-                            latest_date = max(value.keys())
-                            year_data[f'cf_{metric}'] = float(value[latest_date])
+                    # Operating Income for margin
+                    operating_income = financials.get_metric('Income_Statement', 'operatingIncome', year_str)
+                    if operating_income and revenue:
+                        latest_date = max(operating_income.keys())
+                        if float(revenue[latest_date]) > 0:
+                            year_data[METRICS_MAP['operating margin']] = float(operating_income[latest_date]) / float(revenue[latest_date]) * 100
 
-                    # Calculate EPS if we have net income and shares
-                    if 'is_netIncome' in year_data and 'bs_commonStock' in year_data:
-                        shares = self.get_shares_from_common_stock(str(year_data['bs_commonStock']), ticker)
+                    # Cash Flow metrics
+                    cash_flow = financials.get_metric('Cash_Flow', 'totalCashFromOperatingActivities', year_str)
+                    capex = financials.get_metric('Cash_Flow', 'capitalExpenditures', year_str)
+                    if cash_flow:
+                        latest_date = max(cash_flow.keys())
+                        year_data[METRICS_MAP['operating cash flow']] = float(cash_flow[latest_date])
+                    if capex:
+                        latest_date = max(capex.keys())
+                        year_data[METRICS_MAP['capital expenditures']] = float(capex[latest_date])
+
+                    # Get shares and calculate EPS
+                    common_stock = financials.get_metric('Balance_Sheet', 'commonStock', year_str)
+                    if common_stock and 'is_net_income' in year_data:
+                        latest_date = max(common_stock.keys())
+                        shares = self.get_shares_from_common_stock(str(common_stock[latest_date]), ticker)
                         if shares > 0:
-                            year_data['is_sh_for_diluted_eps'] = shares
-                            year_data['eps'] = year_data['is_netIncome'] / shares
+                            year_data[METRICS_MAP['diluted shares']] = shares
+                            year_data[METRICS_MAP['earnings per share']] = year_data['is_net_income'] / shares
 
-                    # Add to financial data if we have basic metrics
-                    if 'is_netIncome' in year_data and 'is_totalRevenue' in year_data:
+                    # Add to financial data if we have the required metrics
+                    required_metrics = ['total revenues', 'net income', 'earnings per share']
+                    if all(METRICS_MAP[metric] in year_data for metric in required_metrics):
                         financial_data.append(year_data)
 
                 except Exception as e:
