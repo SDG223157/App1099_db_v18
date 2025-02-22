@@ -18,6 +18,7 @@ from functools import wraps
 import random
 import time
 import traceback
+from app.utils.data.eodhd_api import Financials, StatementType
 
 # Configure logger
 logger = logging.getLogger(__name__)
@@ -62,10 +63,6 @@ class DataService:
         self.BASE_URL = "https://api.roic.ai/v1/rql"
         self.METRICS = METRICS_MAP
         self.CAGR_METRICS = CAGR_METRICS
-        
-        # Add EODHD configuration
-        self.EODHD_API_KEY = os.getenv('EODHD_API_KEY')
-        self.EODHD_BASE_URL = "https://eodhd.com/api"
         
         # Database configuration
         self.engine = create_engine(
@@ -129,313 +126,119 @@ class DataService:
     
     
     
-    def get_historical_data(self, ticker: str, start_date: str, end_date: str) -> pd.DataFrame:
-        """
-        Get historical data from MySQL database or yfinance.
-        Updates database with new data if requested end date is beyond max date.
-        
-        Parameters:
-        -----------
-        ticker : str
-            Stock ticker symbol
-        start_date : str
-            Start date in YYYY-MM-DD format
-        end_date : str
-            End date in YYYY-MM-DD format
-        
-        Returns:
-        --------
-        pd.DataFrame
-            DataFrame containing historical price data for the requested date range
-        """
-        cleaned_ticker = self.clean_ticker_for_table_name(ticker)
-        table_name = f"his_{cleaned_ticker}"
-        
+    def get_historical_data(self, ticker: str, start_date: str, end_date: str = None) -> pd.DataFrame:
+        """Get historical price data for a ticker"""
         try:
-            # Get the latest trading day (last Friday if weekend)
-            latest_trading_day = pd.Timestamp.now()
-            while latest_trading_day.weekday() > 4:  # 5 = Saturday, 6 = Sunday
-                latest_trading_day -= pd.Timedelta(days=1)
-            latest_trading_day = latest_trading_day.strftime('%Y-%m-%d')
+            # Convert BRK.A to BRK-A for Yahoo Finance
+            if ticker == 'BRK.A':
+                ticker = 'BRK-A'
+                
+            # Get data from yfinance
+            yf_ticker = yf.Ticker(ticker)
+            new_data = yf_ticker.history(start=start_date, end=end_date)
             
-            # Adjust end_date if it's beyond latest trading day
-            end_date = min(pd.to_datetime(end_date), pd.to_datetime(latest_trading_day)).strftime('%Y-%m-%d')
-            
-            # Check if table exists in database
-            if self.table_exists(table_name):
-                logging.info(f"Getting historical data for {ticker} from database")
+            if new_data.empty:
+                raise ValueError(f"No data found for {ticker}")
                 
-                # Get table's date range
-                date_range_query = text(f"""
-                    SELECT MIN(Date) as min_date, MAX(Date) as max_date 
-                    FROM {table_name}
-                """)
-                date_range = pd.read_sql_query(date_range_query, self.engine)
-                
-                # Check for None in date_range values
-                min_date = date_range['min_date'][0]
-                max_date = date_range['max_date'][0]
-                
-                # If min_date or max_date is None, refresh all data
-                if min_date is None or max_date is None:
-                    logging.info(f"Database date range is invalid for {ticker}: min_date={min_date}, max_date={max_date}")
-                    logging.info("Refreshing data from external source...")
-                    success = self.store_historical_data(ticker)
-                    if not success:
-                        raise ValueError(f"Failed to store data for {ticker}")
-                    df = pd.read_sql_table(table_name, self.engine)
-                    df.set_index('Date', inplace=True)
-                    return df[(df.index >= start_date) & (df.index <= end_date)]
-                
-                # Convert dates for comparison
-                db_start = pd.to_datetime(min_date).strftime('%Y-%m-%d')
-                db_end = pd.to_datetime(max_date).strftime('%Y-%m-%d')
-                current_date = pd.Timestamp.now().strftime('%Y-%m-%d')
-                
-                # Calculate default 10-year period
-                default_start = (pd.Timestamp.now() - pd.DateOffset(years=10)).strftime('%Y-%m-%d')
-                
-                # If requested start date is before both database start and default period
-                if (start_date < db_start) and (start_date < default_start):
-                    logging.info(f"Requested start date {start_date} is before database range and default period")
-                    logging.info("Fetching data directly from yfinance...")
-                    
-                    # Fetch data directly for the requested period
-                    ticker_obj = yf.Ticker(ticker)
-                    df = ticker_obj.history(start=start_date, end=end_date)
-                    if df.empty:
-                        raise ValueError(f"No data found for {ticker} in requested date range")
-                    df.index = df.index.tz_localize(None)
-                    return df
+            # Remove timezone info
+            if hasattr(new_data.index, 'tz_localize'):
+                new_data.index = new_data.index.tz_localize(None)
+            elif hasattr(new_data.index, 'tz'):
+                new_data.index = new_data.index.tz_convert(None)
 
-                # If requested start date is before database start but within default period
-                if start_date < db_start:
-                    logging.info(f"Requested start date {start_date} is before database start date {db_start}")
-                    logging.info("Fetching additional historical data from yfinance...")
-                    
-                    # Fetch additional historical data
-                    ticker_obj = yf.Ticker(ticker)
-                    new_data = ticker_obj.history(start=start_date, end=db_start)
-                    new_data.index = new_data.index.tz_localize(None)
-                    
-                    # Read existing data
-                    existing_data = pd.read_sql_table(table_name, self.engine)
-                    existing_data.set_index('Date', inplace=True)
-                    
-                    # Combine datasets
-                    combined_data = pd.concat([new_data, existing_data])
-                    combined_data = combined_data[~combined_data.index.duplicated(keep='last')]
-                    combined_data.sort_index(inplace=True)
-                    
-                    # Update database
-                    success = self.store_dataframe(combined_data, table_name)
-                    if not success:
-                        raise ValueError(f"Failed to update data for {ticker}")
-                    
-                    return combined_data[(combined_data.index >= start_date) & (combined_data.index <= end_date)]
-                
-                # Check if data needs updating (more than 10 days old)
-                days_difference = (pd.to_datetime(current_date) - pd.to_datetime(db_end)).days
-                if days_difference >= 1:
-                    logging.info(f"Data is {days_difference} days old. Updating from yfinance...")
-                    
-                    # Delete the last 10 days of data
-                    cutoff_date = pd.to_datetime(db_end) - pd.Timedelta(days=10)
-                    
-                    # Read existing data
-                    existing_data = pd.read_sql_table(table_name, self.engine)
-                    existing_data.set_index('Date', inplace=True)
-                    existing_data = existing_data[existing_data.index < cutoff_date]
-                    
-                    # Fetch new data
-                    ticker_obj = yf.Ticker(ticker)
-                    new_data = ticker_obj.history(start=cutoff_date.strftime('%Y-%m-%d'))
-                    new_data.index = new_data.index.tz_localize(None)
-                    
-                    # Combine datasets
-                    combined_data = pd.concat([existing_data, new_data])
-                    combined_data = combined_data[~combined_data.index.duplicated(keep='last')]
-                    combined_data.sort_index(inplace=True)
-                    
-                    # Update database
-                    success = self.store_dataframe(combined_data, table_name)
-                    if not success:
-                        raise ValueError(f"Failed to update data for {ticker}")
-                    
-                    return combined_data[(combined_data.index >= start_date) & (combined_data.index <= end_date)]
-                
-                # If data is current enough, return filtered data from database
-                df = pd.read_sql_table(table_name, self.engine)
-                df.set_index('Date', inplace=True)
-                return df[(df.index >= start_date) & (df.index <= end_date)]
-            
-            # If table doesn't exist, check if beyond default period
-            default_start = (pd.Timestamp.now() - pd.DateOffset(years=20)).strftime('%Y-%m-%d')
-            if start_date < default_start:
-                logging.info(f"Requested start date {start_date} is beyond default period and no existing data")
-                # Fetch data directly from yfinance for the specific period
-                ticker_obj = yf.Ticker(ticker)
-                df = ticker_obj.history(start=start_date, end=end_date)
-                if df.empty:
-                    raise ValueError(f"No data found for {ticker} in requested date range")
-                df.index = df.index.tz_localize(None)
-                return df
-            
-            # If within default period, store all historical data first
-            logging.info(f"Data not found in database for {ticker}, fetching data")
-            success = self.store_historical_data(ticker)
-            if not success:
-                raise ValueError(f"Failed to store data for {ticker}")
-            df = pd.read_sql_table(table_name, self.engine)
-            df.set_index('Date', inplace=True)
-            return df[(df.index >= start_date) & (df.index <= end_date)]
-                    
+            return new_data
+
         except Exception as e:
-            logging.error(f"Error in get_historical_data for {ticker}: {str(e)}")
+            logger.error(f"Error in get_historical_data for {ticker}: {str(e)}")
             raise
         
         
-    def get_financial_data(self, ticker: str, metric_description: str, start_year: str, end_year: str) -> pd.Series:
-        """Get financial data from database first, if not exists then fetch from EODHD API and store it."""
+    def get_financial_data(self, ticker: str, metric_description: str, 
+                        start_year: str, end_year: str) -> pd.Series:
+        """
+        Get financial data from MySQL database or ROIC API if not exists/incomplete.
+        """
         cleaned_ticker = self.clean_ticker_for_table_name(ticker)
         table_name = f"roic_{cleaned_ticker}"
-        values = {}
-
+        MAX_MISSING_YEARS_TOLERANCE = 2 
+        # company_name = yf.Ticker(ticker).info['longName']
+        
         try:
+            # First try to get data from database
+            # if "^" in ticker or "-" in ticker or "=" in ticker:
+            #     return None
             if not is_stock(ticker):
                 return None
-
-            # First check if data exists in database
+            # if company_name:
+            # # Check for excluded terms using regex (case insensitive)
+            #     excluded_terms = r'shares|etf|index|trust'
+            #     if re.search(excluded_terms, company_name, re.IGNORECASE):
+            #         return None
+                
+            
             if self.table_exists(table_name):
-                logger.info(f"Getting financial data for {ticker} from database")
+                print(f"Getting financial data for {ticker} from database")
                 df = pd.read_sql_table(table_name, self.engine)
-                if not df.empty:
-                    for year in range(int(start_year), int(end_year) + 1):
-                        year_data = df[df['fiscal_year'] == year]
-                        if not year_data.empty:
-                            metric_field = METRICS_MAP.get(metric_description)
-                            if metric_field in year_data.columns:
-                                values[year] = year_data[metric_field].iloc[0]
-                    if values:
-                        return pd.Series(values)
+                
+                metric_field = self.METRICS.get(metric_description.lower())
+                if metric_field in df.columns:
+                    df['fiscal_year'] = df['fiscal_year'].astype(int)
+                    
+                    # Filter for requested years
+                    mask = (df['fiscal_year'] >= int(start_year)) & (df['fiscal_year'] <= int(end_year))
+                    filtered_df = df[mask]
+                    
+                    # Check if we have all the years we need
+                    requested_years = set(range(int(start_year), int(end_year) + 1))
+                    actual_years = set(filtered_df['fiscal_year'].values)
+                    missing_years = requested_years - actual_years
+                    
+                    return pd.Series(
+                            filtered_df[metric_field].values,
+                            index=filtered_df['fiscal_year'],
+                            name=metric_description
+                        )
+                    # if len(missing_years) == 0:
+                    # if len(missing_years) <= MAX_MISSING_YEARS_TOLERANCE:
+                    #     return pd.Series(
+                    #         filtered_df[metric_field].values,
+                    #         index=filtered_df['fiscal_year'],
+                    #         name=metric_description
+                    #     )
+                    # else:
+                    #     print(f"Incomplete data for {ticker}, fetching from API")
+                    #     # If data is incomplete, fetch all data and update database
+                    #     success = self.store_financial_data(ticker, start_year, end_year)
+                    #     if success:
+                    #         df = pd.read_sql_table(table_name, self.engine)
+                    #         df['fiscal_year'] = df['fiscal_year'].astype(int)
+                    #         mask = (df['fiscal_year'] >= int(start_year)) & (df['fiscal_year'] <= int(end_year))
+                    #         filtered_df = df[mask]
+                    #         return pd.Series(
+                    #             filtered_df[metric_field].values,
+                    #             index=filtered_df['fiscal_year'],
+                    #             name=metric_description
+                    #         )
 
-            # If not in database or incomplete, get from EODHD API
-            logger.info(f"Getting financial data for {ticker} from EODHD API")
-            
-            # Get data from EODHD
-            eodhd_ticker = self.convert_to_eodhd_ticker(ticker)
-            eodhd_url = f"{self.EODHD_BASE_URL}/fundamentals/{eodhd_ticker}?api_token={self.EODHD_API_KEY}&fmt=json"
-            response = requests.get(eodhd_url)
-            
-            if response.status_code != 200:
-                raise ValueError(f"EODHD API request failed with status {response.status_code}")
-            
-            data = response.json()
-            logger.debug(f"EODHD Data Structure:")
-            logger.debug(f"Keys in root: {list(data.keys())}")
-            if 'Financials' in data:
-                logger.debug(f"Keys in Financials: {list(data['Financials'].keys())}")
-            
-            # Process the data
-            financial_data = []
-            metric_field = METRICS_MAP.get(metric_description)
-            
-            # Get all required data
-            income_data = data.get('Financials', {}).get('Income_Statement', {}).get('yearly', {})
-            shares_data = data.get('outstandingShares', {}).get('annual', {})
-            balance_data = data.get('Financials', {}).get('Balance_Sheet', {}).get('yearly', {})
-            cash_flow_data = data.get('Financials', {}).get('Cash_Flow', {}).get('yearly', {})
-            
-            # Process each year
-            current_year = datetime.now().year
-            for year in range(int(start_year), int(end_year) + 1):
-                try:
-                    # Skip future years and current year (likely incomplete)
-                    if year >= current_year:
-                        continue
-
-                    year_data = {
-                        'fiscal_year': year,
-                        'period_label': 'FY',
-                        'period_end_date': f"{year}-12-31"
-                    }
-
-                    # Get net income and revenue
-                    for date, entry in income_data.items():
-                        if str(year) in date:
-                            try:
-                                net_income = float(entry.get('netIncome') or 0)
-                                revenue = float(entry.get('totalRevenue') or 0)
-                                operating_income = float(entry.get('operatingIncome') or 0)
-                                # Only store if we have actual data (non-zero values)
-                                if net_income != 0 and revenue != 0:
-                                    year_data['is_net_income'] = net_income
-                                    year_data['is_sales_and_services_revenues'] = revenue
-                                    if revenue > 0:
-                                        year_data['oper_margin'] = float(f"{(operating_income / revenue * 100):.15f}")
-                            except (TypeError, ValueError) as e:
-                                logger.warning(f"Error processing income data for {year}: {str(e)}")
-                            break
-
-                    # Get shares data
-                    shares = None
-                    # Get shares from Balance Sheet commonStock
-                    for date, entry in balance_data.items():
-                        if str(year) in date:
-                            common_stock = entry.get('commonStock')
-                            if common_stock:
-                                shares = self.get_shares_from_common_stock(common_stock, ticker)
-                                break
-
-                    # Calculate EPS only if we have valid shares and net income
-                    if shares and shares > 0 and 'is_net_income' in year_data:
-                        year_data['is_sh_for_diluted_eps'] = shares
-                        year_data['eps'] = year_data['is_net_income'] / shares
-
-                    # Get cash flow data
-                    for date, entry in cash_flow_data.items():
-                        if str(year) in date:
-                            cf_oper = float(entry.get('totalCashFromOperatingActivities', 0))
-                            cap_ex = float(entry.get('capitalExpenditures', 0))
-                            if cf_oper != 0 and cap_ex != 0:  # Changed from 'or' to 'and'
-                                year_data['cf_cash_from_oper'] = cf_oper
-                                year_data['cf_cap_expenditures'] = cap_ex
-                            break
-
-                    # Get balance sheet data and calculate ROIC
-                    for date, entry in balance_data.items():
-                        if str(year) in date:
-                            # Create income_stmt and balance_sheet DataFrames for ROIC calculation
-                            income_stmt = pd.DataFrame(income_data).T
-                            balance_sheet = pd.DataFrame(balance_data).T
-                            
-                            # Calculate ROIC using original method
-                            year_data['return_on_inv_capital'] = self.calculate_roic(income_stmt, balance_sheet, date)
-                            break
-
-                    # Store the requested metric in values dict if it exists and is valid
-                    if metric_field in year_data and year_data[metric_field] != 0:
-                        values[year] = year_data[metric_field]
-
-                    # Only append year_data if it contains complete data
-                    required_fields = ['is_net_income', 'is_sales_and_services_revenues', 'eps']
-                    if all(field in year_data for field in required_fields):
-                        financial_data.append(year_data)
-
-                except Exception as e:
-                    logger.error(f"Error processing data for {year}: {str(e)}")
-
-            # Store all data in database
-            if financial_data:
-                df = pd.DataFrame(financial_data)
-                self.store_dataframe(df, table_name)
-                logger.info(f"Successfully stored EODHD data for {ticker}")
-
-            return pd.Series(values)
-
+            # If not in database, store it first
+            print(f"Data not found in database for {ticker}, fetching from API")
+            success = self.store_financial_data(ticker, start_year, end_year)
+            if success:
+                df = pd.read_sql_table(table_name, self.engine)
+                metric_field = self.METRICS.get(metric_description.lower())
+                df['fiscal_year'] = df['fiscal_year'].astype(int)
+                mask = (df['fiscal_year'] >= int(start_year)) & (df['fiscal_year'] <= int(end_year))
+                filtered_df = df[mask]
+                return pd.Series(
+                    filtered_df[metric_field].values,
+                    index=filtered_df['fiscal_year'],
+                    name=metric_description
+                )
+            else:
+                return None
+                
         except Exception as e:
-            logger.error(f"Error getting financial data for {ticker}: {str(e)}")
-            logger.warning(f"EODHD API failed for {ticker}: Could not get {metric_description} from EODHD, trying database")
+            print(f"Error in get_financial_data for {ticker}: {str(e)}")
             return None
     
     def store_historical_data(self, ticker: str, start_date: str = None, end_date: str = None) -> bool:
@@ -525,71 +328,9 @@ class DataService:
             logger.error(f"Error calculating ROIC: {str(e)}")
             return 0.0
 
-    def convert_to_eodhd_ticker(self, ticker: str) -> str:
-        """
-        Convert Yahoo Finance ticker to EODHD format.
-        
-        Rules:
-        - For US stocks: Remove any suffix and add .US (e.g., AAPL -> AAPL.US)
-        - For non-US exchanges:
-            - TSX: .TO -> .TSE (e.g., TD.TO -> TD.TSE)
-            - LSE: .L -> .LSE (e.g., VOD.L -> VOD.LSE)
-            - HK: .HK -> .HK (e.g., 0700.HK -> 0700.HK)
-            - China SZ: .SZ -> .SZ (e.g., 000001.SZ -> 000001.SZ)
-            - China SH: .SS -> .SH (e.g., 600000.SS -> 600000.SH)
-            - etc.
-        """
-        # Exchange mapping from Yahoo to EODHD
-        exchange_map = {
-            'TO': 'TSE',    # Toronto
-            'L': 'LSE',     # London
-            'PA': 'PA',     # Paris
-            'DE': 'XETRA',  # German
-            'MI': 'MI',     # Milan
-            'MC': 'MC',     # Madrid
-            'AX': 'AU',     # Australian
-            'AS': 'AS',     # Amsterdam
-            'BR': 'BR',     # Brussels
-            'ST': 'ST',     # Stockholm
-            'HK': 'HK',     # Hong Kong
-            'SZ': 'SHE',     # Shenzhen
-            'SS': 'SHG',     # Shanghai (Yahoo uses SS, EODHD uses SH)
-            'TW': 'TW',     # Taiwan
-            'KS': 'KO',     # Korea
-            'T': 'T',       # Tokyo
-        }
-        
-        # Split ticker into base and exchange (if any)
-        parts = ticker.split('.')
-        base_ticker = parts[0]
-        
-        # Handle special cases first
-        if '^' in ticker:  # Indices
-            return None
-        if '-' in ticker or '=' in ticker:  # Special symbols
-            return None
-        
-        # Handle Hong Kong stocks - ensure 4 digits with leading zeros
-        if len(parts) > 1 and parts[1] == 'HK':
-            base_ticker = base_ticker.zfill(4)
-        
-        # Handle China A-shares - ensure 6 digits with leading zeros
-        if len(parts) > 1 and parts[1] in ['SZ', 'SS']:
-            base_ticker = base_ticker.zfill(6)
-        
-        if len(parts) == 1:  # No exchange suffix
-            return f"{base_ticker}.US"  # Assume US stock
-        
-        exchange = parts[1]
-        if exchange in exchange_map:
-            return f"{base_ticker}.{exchange_map[exchange]}"
-        
-        # If exchange not found in mapping, return None
-        logger.warning(f"Unknown exchange suffix in ticker: {ticker}")
-        return None
-
+    
     def store_financial_data(self, ticker: str, start_year: str = None, end_year: str = None) -> bool:
-        """Fetch and store financial data, try ROIC API first, then EODHD, then yfinance"""
+        """Fetch and store financial data using EODHD API"""
         try:
             logger.info(f"Fetching financial data for {ticker}")
             
@@ -598,47 +339,72 @@ class DataService:
                 end_year = str(current_year)
                 start_year = str(current_year - 10)
 
-            # Try ROIC API first
-            try:
-                logger.info(f"Trying ROIC API for {ticker}")
-                url = f"{self.BASE_URL}/financials/{ticker}"
-                response = requests.get(url, headers={'Authorization': f'Bearer {self.API_KEY}'})
-                response.raise_for_status()
-                data = response.json()
-                
-                if data and not any('N/A' in str(v) for v in data.values()):
-                    # Process ROIC API data
-                    return self.process_roic_data(data, ticker, start_year, end_year)
+            # Initialize EODHD API
+            financials = Financials(ticker, self.API_KEY)
+            
+            # Process each year's data
+            financial_data = []
+            for year in range(int(start_year), int(end_year) + 1):
+                try:
+                    year_str = str(year)
+                    year_data = {
+                        'fiscal_year': year,
+                        'period_label': 'FY',
+                        'period_end_date': f"{year}-12-31"
+                    }
+
+                    # Get Income Statement data
+                    net_income = financials.get_metric(StatementType.INCOME_STATEMENT, 'netIncome', year_str)
+                    revenue = financials.get_metric(StatementType.INCOME_STATEMENT, 'totalRevenue', year_str)
+                    operating_income = financials.get_metric(StatementType.INCOME_STATEMENT, 'operatingIncome', year_str)
+
+                    if net_income and revenue:
+                        latest_date = max(net_income.keys())
+                        year_data['is_net_income'] = float(net_income[latest_date])
+                        year_data['is_sales_and_services_revenues'] = float(revenue[latest_date])
+                        if operating_income:
+                            year_data['oper_margin'] = float(operating_income[latest_date])
+
+                    # Get Balance Sheet data for shares
+                    common_stock = financials.get_metric(StatementType.BALANCE_SHEET, 'commonStock', year_str)
+                    if common_stock:
+                        latest_date = max(common_stock.keys())
+                        shares = self.get_shares_from_common_stock(str(common_stock[latest_date]), ticker)
+                        if shares > 0:
+                            year_data['is_sh_for_diluted_eps'] = shares
+                            if 'is_net_income' in year_data:
+                                year_data['eps'] = year_data['is_net_income'] / shares
+
+                    # Get Cash Flow data
+                    cf_oper = financials.get_metric(StatementType.CASH_FLOW, 'totalCashFromOperatingActivities', year_str)
+                    cap_ex = financials.get_metric(StatementType.CASH_FLOW, 'capitalExpenditures', year_str)
                     
-            except Exception as e:
-                logger.warning(f"ROIC API failed for {ticker}: {str(e)}, trying EODHD")
+                    if cf_oper and cap_ex:
+                        latest_date = max(cf_oper.keys())
+                        year_data['cf_cash_from_oper'] = float(cf_oper[latest_date])
+                        year_data['cf_cap_expenditures'] = float(cap_ex[latest_date])
 
-            # If ROIC API fails or has N/A, try EODHD
-            try:
-                eodhd_ticker = self.convert_to_eodhd_ticker(ticker)
-                eodhd_url = f"{self.EODHD_BASE_URL}/fundamentals/{eodhd_ticker}?api_token={self.EODHD_API_KEY}&fmt=json"
-                response = requests.get(eodhd_url)
-                if response.status_code == 200:
-                    return self.get_financial_data(ticker, "eps", start_year, end_year) is not None
-                
-            except Exception as e:
-                logger.warning(f"EODHD API failed for {ticker}: {str(e)}, trying yfinance")
+                    # Calculate ROIC
+                    if all(key in year_data for key in ['is_net_income', 'is_sales_and_services_revenues']):
+                        financial_data.append(year_data)
 
-            # If both ROIC and EODHD fail, try yfinance
-            try:
-                yf_ticker = yf.Ticker(ticker)
-                financials = yf_ticker.financials
-                if not financials.empty:
-                    return self.process_yfinance_data(financials, ticker, start_year, end_year)
-                
-            except Exception as e:
-                logger.error(f"All APIs failed for {ticker}: {str(e)}")
-                return False
+                except Exception as e:
+                    logger.error(f"Error processing data for {year}: {str(e)}")
+                    continue
+
+            # Store data in database
+            if financial_data:
+                cleaned_ticker = self.clean_ticker_for_table_name(ticker)
+                table_name = f"roic_{cleaned_ticker}"
+                df = pd.DataFrame(financial_data)
+                return self.store_dataframe(df, table_name)
+
+            return False
 
         except Exception as e:
             logger.error(f"Error storing financial data for {ticker}: {str(e)}")
             return False
-
+        
     def get_analysis_dates(self, end_date: str, lookback_type: str, 
                             lookback_value: int) -> str:
             """
@@ -785,18 +551,3 @@ class DataService:
         rate_limiter = RateLimiter(calls_per_second=1)  # Limit to 1 call per second
         rate_limiter.wait()
         return self.store_financial_data(ticker, start_year, end_year)
-
-    def get_shares_from_common_stock(self, common_stock: str, ticker: str) -> float:
-        """Convert commonStock value to actual shares count"""
-        try:
-            if not common_stock:
-                return 0
-            
-            # Handle string values that might contain commas or other formatting
-            clean_value = str(common_stock).replace(',', '').replace('.00', '')
-            shares = float(clean_value)
-            
-            return shares
-        except (ValueError, AttributeError) as e:
-            logger.error(f"Error converting commonStock value '{common_stock}': {str(e)}")
-            return 0
