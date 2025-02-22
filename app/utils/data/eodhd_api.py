@@ -1,11 +1,12 @@
-
-
 import requests
 import pandas as pd
 from datetime import datetime
 from typing import Dict, Optional, Union, List, Any
 from enum import Enum
 from openpyxl.utils import get_column_letter
+import logging
+
+logger = logging.getLogger(__name__)
 
 class StatementType(Enum):
     BALANCE_SHEET = 'Balance_Sheet'
@@ -101,23 +102,40 @@ class Financials:
     }
 
     def __init__(self, symbol: str, api_token: str):
-        self.symbol = symbol.upper()
+        """Initialize with symbol and convert to proper exchange format"""
+        self.original_symbol = symbol.upper()
         self._api_token = api_token
         self._base_url = 'https://eodhd.com/api/fundamentals'
         self._data = None
         self._quarterly_data = {}
         self._annual_data = {}
+        
+        # Convert symbol to EODHD format
+        if '.' not in symbol:
+            # US stocks
+            self.symbol = f"{symbol.upper()}.US"
+        else:
+            # Convert Chinese exchange codes
+            code, exchange = symbol.upper().split('.')
+            if exchange == 'SS':
+                self.symbol = f"{code}.SHG"  # Shanghai
+            elif exchange == 'SZ':
+                self.symbol = f"{code}.SHE"  # Shenzhen
+            else:
+                self.symbol = symbol.upper()
 
     def _fetch_data(self) -> None:
         """Fetch financial data from EODHD API"""
         try:
+            # Use the converted symbol here
             url = f'{self._base_url}/{self.symbol}?api_token={self._api_token}&fmt=json'
+            logger.info(f"Fetching data for {self.original_symbol} (converted to {self.symbol})")
             response = requests.get(url)
             response.raise_for_status()
             self._data = response.json()
             self._process_all_statements()
         except requests.exceptions.RequestException as e:
-            print(f"Error fetching data: {e}")
+            logger.error(f"Error fetching data: {e}")
             self._data = None
 
     def _get_metric_calculation_type(self, statement_type: StatementType, metric: str) -> MetricType:
