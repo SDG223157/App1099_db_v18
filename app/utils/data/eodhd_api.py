@@ -196,6 +196,10 @@ class Financials:
                 quarters_by_year = {}
                 for date, data in statement_data.items():
                     try:
+                        # Skip metadata keys
+                        if date in ['currency_symbol', 'filing_date']:
+                            continue
+                        
                         quarterly_data = data.get("quarterly", {})
                         if quarterly_data:
                             date_obj = pd.to_datetime(date)
