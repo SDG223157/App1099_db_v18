@@ -551,3 +551,18 @@ class DataService:
         rate_limiter = RateLimiter(calls_per_second=1)  # Limit to 1 call per second
         rate_limiter.wait()
         return self.store_financial_data(ticker, start_year, end_year)
+
+    def get_shares_from_common_stock(self, common_stock: str, ticker: str) -> float:
+        """Convert commonStock value to actual shares count"""
+        try:
+            if not common_stock:
+                return 0
+            
+            # Handle string values that might contain commas or other formatting
+            clean_value = str(common_stock).replace(',', '').replace('.00', '')
+            shares = float(clean_value)
+            
+            return shares
+        except (ValueError, AttributeError) as e:
+            logger.error(f"Error converting commonStock value '{common_stock}': {str(e)}")
+            return 0
