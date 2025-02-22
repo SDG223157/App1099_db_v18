@@ -7,6 +7,9 @@ from datetime import datetime
 from typing import Dict, Optional, Union, List, Any
 from enum import Enum
 from openpyxl.utils import get_column_letter
+import logging
+
+logger = logging.getLogger(__name__)
 
 class StatementType(Enum):
     BALANCE_SHEET = 'Balance_Sheet'
@@ -128,17 +131,20 @@ class Financials:
     def _fetch_data(self) -> None:
         """Fetch financial data from EODHD API"""
         try:
-            url = f'{self._base_url}/fundamentals/{self.symbol}'
-            params = {
-                'api_token': self._api_token,
-                'fmt': 'json'
-            }
-            response = requests.get(url, params=params)
+            # Use direct URL format that works
+            url = f'https://eodhd.com/api/fundamentals/{self.symbol}?api_token={self._api_token}&fmt=json'
+            response = requests.get(url)
             response.raise_for_status()
             self._data = response.json()
-            self._process_all_statements()
+            
+            # Check if we got valid data
+            if self._data and isinstance(self._data, dict):
+                self._process_all_statements()
+            else:
+                logger.error(f"Invalid data format received for {self.symbol}")
+                self._data = None
         except requests.exceptions.RequestException as e:
-            print(f"Error fetching data: {e}")
+            logger.error(f"Error fetching data: {e}")
             self._data = None
 
     def _get_metric_calculation_type(self, statement_type: StatementType, metric: str) -> MetricType:
@@ -250,14 +256,20 @@ class Financials:
             if not quarterly_data:
                 return
 
-            # Create DataFrame from quarterly data
+            # Create DataFrame from quarterly data all at once
             metrics = list(quarterly_data[0]['data'].keys())
-            df_quarterly = pd.DataFrame(index=metrics)
-
-            # Add quarterly data
+            data_dict = {}
+            
+            # Prepare all data first
             for quarter in quarterly_data:
                 date = quarter['date'].strftime('%Y-%m-%d')
-                df_quarterly[date] = pd.Series({metric: quarter['data'].get(metric) for metric in metrics})
+                data_dict[date] = {metric: quarter['data'].get(metric) for metric in metrics}
+            
+            # Create DataFrame in one go
+            df_quarterly = pd.DataFrame(data_dict).T
+            
+            # Transpose to get metrics as rows and dates as columns
+            df_quarterly = df_quarterly.T
 
             # Create DataFrame from annual data
             df_annual = pd.DataFrame(annual_data).T if annual_data else None
