@@ -371,7 +371,16 @@ class DataService:
                     if combined_df.isin(['N/A', 'None', None]).any().any():
                         logger.info("Found missing values, trying EODHD API to fill gaps...")
                         try:
-                            financials = Financials(ticker, os.getenv('EODHD_API_KEY'))
+                            # Convert Chinese stock tickers
+                            eodhd_ticker = ticker
+                            if '.SS' in ticker:
+                                code, _ = ticker.split('.')
+                                eodhd_ticker = f"{code}.SHG"
+                            elif '.SZ' in ticker:
+                                code, _ = ticker.split('.')
+                                eodhd_ticker = f"{code}.SHE"
+                                
+                            financials = Financials(eodhd_ticker, os.getenv('EODHD_API_KEY'))
                             financials._fetch_data()
 
                             if financials._data:
@@ -445,8 +454,19 @@ class DataService:
             if not success:
                 try:
                     logger.info("Trying EODHD API...")
-                    financials = Financials(ticker, os.getenv('EODHD_API_KEY'))
+                    # Convert Chinese stock tickers
+                    eodhd_ticker = ticker
+                    if '.SS' in ticker:
+                        code, _ = ticker.split('.')
+                        eodhd_ticker = f"{code}.SHG"
+                    elif '.SZ' in ticker:
+                        code, _ = ticker.split('.')
+                        eodhd_ticker = f"{code}.SHE"
+                        
+                    financials = Financials(eodhd_ticker, os.getenv('EODHD_API_KEY'))
                     financials._fetch_data()
+                    
+                    financial_data = []  # Initialize the list here
 
                     if financials._data:
                         for year in range(int(start_year), int(end_year) + 1):
