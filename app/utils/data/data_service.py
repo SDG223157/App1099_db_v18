@@ -392,7 +392,12 @@ class DataService:
                                         try:
                                             yearly_cash_flows = financials.get_yearly_operating_cash_flow()
                                             if yearly_cash_flows and year in yearly_cash_flows:
-                                                combined_df.at[index, 'operating_cash_flow'] = float(yearly_cash_flows[year])
+                                                cash_flow_value = yearly_cash_flows[year]
+                                                if cash_flow_value is not None and cash_flow_value != 'None':
+                                                    combined_df.at[index, 'operating_cash_flow'] = float(cash_flow_value)
+                                                    logger.info(f"Updated operating cash flow for {year}: {cash_flow_value}")
+                                                else:
+                                                    logger.warning(f"Got null value for operating cash flow in {year}")
                                         except Exception as e:
                                             logger.warning(f"Failed to get operating cash flow for {year}: {str(e)}")
                                     
