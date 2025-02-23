@@ -373,18 +373,50 @@ class DataService:
                             if financials._data:
                                 for index, row in combined_df.iterrows():
                                     year = str(row['fiscal_year'])
-                                    # Try to fill N/A values from EODHD
+                                    
+                                    # Try to fill N/A values using dedicated methods
                                     if row.get('total_revenues') == 'N/A':
-                                        revenue = financials.get_metric('Income_Statement', 'totalRevenue', year, freq='annual')
-                                        if revenue:
-                                            combined_df.at[index, 'total_revenues'] = float(revenue)
+                                        try:
+                                            yearly_revenues = financials.get_yearly_revenues()
+                                            if yearly_revenues and year in yearly_revenues:
+                                                combined_df.at[index, 'total_revenues'] = float(yearly_revenues[year])
+                                        except Exception as e:
+                                            logger.warning(f"Failed to get revenues for {year}: {str(e)}")
                                     
                                     if row.get('net_income') == 'N/A':
-                                        net_income = financials.get_metric('Income_Statement', 'netIncome', year, freq='annual')
-                                        if net_income:
-                                            combined_df.at[index, 'net_income'] = float(net_income)
+                                        try:
+                                            yearly_net_income = financials.get_yearly_net_income()
+                                            if yearly_net_income and year in yearly_net_income:
+                                                combined_df.at[index, 'net_income'] = float(yearly_net_income[year])
+                                        except Exception as e:
+                                            logger.warning(f"Failed to get net income for {year}: {str(e)}")
                                     
-                                    # Fill other N/A values similarly...
+                                    if row.get('operating_margin') == 'N/A':
+                                        try:
+                                            yearly_margins = financials.get_yearly_operating_margins()
+                                            if yearly_margins and year in yearly_margins:
+                                                combined_df.at[index, 'operating_margin'] = float(yearly_margins[year])
+                                        except Exception as e:
+                                            logger.warning(f"Failed to get operating margin for {year}: {str(e)}")
+
+                                    if row.get('operating_cash_flow') == 'N/A':
+                                        try:
+                                            yearly_cash_flows = financials.get_yearly_operating_cash_flow()
+                                            if yearly_cash_flows and year in yearly_cash_flows:
+                                                combined_df.at[index, 'operating_cash_flow'] = float(yearly_cash_flows[year])
+                                        except Exception as e:
+                                            logger.warning(f"Failed to get operating cash flow for {year}: {str(e)}")
+
+                                    if row.get('diluted_shares') == 'N/A':
+                                        try:
+                                            yearly_shares = financials.get_yearly_shares_outstanding()
+                                            if yearly_shares and year in yearly_shares:
+                                                shares = yearly_shares[year]
+                                                combined_df.at[index, 'diluted_shares'] = float(shares)
+                                                if row.get('net_income') != 'N/A':
+                                                    combined_df.at[index, 'earnings_per_share'] = float(row['net_income']) / float(shares)
+                                        except Exception as e:
+                                            logger.warning(f"Failed to get shares for {year}: {str(e)}")
                         except Exception as e:
                             logger.warning(f"EODHD API failed to fill gaps: {str(e)}")
 
