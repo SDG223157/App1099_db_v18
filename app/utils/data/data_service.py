@@ -363,6 +363,10 @@ class DataService:
                     combined_df = pd.concat(all_metrics_data, axis=1)
                     combined_df = combined_df.loc[:,~combined_df.columns.duplicated()]
                     
+                    # Add logging to check N/A values
+                    na_check = combined_df.isin(['N/A']).any()
+                    logger.info(f"Columns with N/A values: {na_check[na_check].index.tolist()}")
+                    
                     # Check for N/A values
                     if combined_df.isin(['N/A']).any().any():
                         logger.info("Found N/A values, trying EODHD API to fill gaps...")
@@ -419,6 +423,9 @@ class DataService:
                                             logger.warning(f"Failed to get shares for {year}: {str(e)}")
                         except Exception as e:
                             logger.warning(f"EODHD API failed to fill gaps: {str(e)}")
+
+                    else:
+                        logger.info("No N/A values found, using ROIC data directly")
 
                     logger.info(f"Successfully got all data for {ticker}")
                     cleaned_ticker = self.clean_ticker_for_table_name(ticker)
