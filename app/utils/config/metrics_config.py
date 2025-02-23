@@ -17,7 +17,7 @@ METRICS_TO_FETCH = list(METRICS_MAP.keys())
 # Metrics that should include CAGR calculation
 CAGR_METRICS = {
     "total revenues",
-    "operating cash flow",
+    "operating income",
     "net income",
     "earnings per share"
 }
