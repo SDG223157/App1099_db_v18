@@ -347,6 +347,8 @@ class DataService:
                 response = requests.get(url, headers=headers)
                 response.raise_for_status()
                 roic_data = response.json()
+                
+                logger.info(f"ROIC API response: {roic_data[:2]}")  # Log first 2 items
 
                 # Process ROIC data and identify N/A values
                 financial_data = []
@@ -358,7 +360,11 @@ class DataService:
                         na_metrics = {k: v for k, v in year_data.items() if v == 'N/A'}
                         if na_metrics:
                             na_years[year] = list(na_metrics.keys())
+                            logger.info(f"Year {year} has N/A values for: {na_metrics.keys()}")
                         financial_data.append(year_data)
+
+                logger.info(f"Processed {len(financial_data)} years of data")
+                logger.info(f"Years with N/A: {na_years.keys()}")
 
                 # If we have data with N/A values, try to fill them from EODHD
                 if na_years:
