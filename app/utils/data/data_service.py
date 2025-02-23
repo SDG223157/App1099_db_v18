@@ -363,13 +363,13 @@ class DataService:
                     combined_df = pd.concat(all_metrics_data, axis=1)
                     combined_df = combined_df.loc[:,~combined_df.columns.duplicated()]
                     
-                    # Add logging to check N/A values
-                    na_check = combined_df.isin(['N/A']).any()
-                    logger.info(f"Columns with N/A values: {na_check[na_check].index.tolist()}")
+                    # Add logging to check N/A and None values
+                    na_check = combined_df.isin(['N/A', 'None', None]).any()
+                    logger.info(f"Columns with missing values: {na_check[na_check].index.tolist()}")
                     
-                    # Check for N/A values
-                    if combined_df.isin(['N/A']).any().any():
-                        logger.info("Found N/A values, trying EODHD API to fill gaps...")
+                    # Check for N/A or None values
+                    if combined_df.isin(['N/A', 'None', None]).any().any():
+                        logger.info("Found missing values, trying EODHD API to fill gaps...")
                         try:
                             financials = Financials(ticker, os.getenv('EODHD_API_KEY'))
                             financials._fetch_data()
@@ -378,7 +378,15 @@ class DataService:
                                 for index, row in combined_df.iterrows():
                                     year = str(row['fiscal_year'])
                                     
-                                    # Try to fill N/A values using dedicated methods
+                                    # Try to fill missing values using dedicated methods
+                                    if row.get('operating_cash_flow') in ['N/A', 'None', None]:
+                                        try:
+                                            yearly_cash_flows = financials.get_yearly_operating_cash_flow()
+                                            if yearly_cash_flows and year in yearly_cash_flows:
+                                                combined_df.at[index, 'operating_cash_flow'] = float(yearly_cash_flows[year])
+                                        except Exception as e:
+                                            logger.warning(f"Failed to get operating cash flow for {year}: {str(e)}")
+                                    
                                     if row.get('total_revenues') == 'N/A':
                                         try:
                                             yearly_revenues = financials.get_yearly_revenues()
@@ -403,14 +411,6 @@ class DataService:
                                         except Exception as e:
                                             logger.warning(f"Failed to get operating margin for {year}: {str(e)}")
 
-                                    if row.get('operating_cash_flow') == 'N/A':
-                                        try:
-                                            yearly_cash_flows = financials.get_yearly_operating_cash_flow()
-                                            if yearly_cash_flows and year in yearly_cash_flows:
-                                                combined_df.at[index, 'operating_cash_flow'] = float(yearly_cash_flows[year])
-                                        except Exception as e:
-                                            logger.warning(f"Failed to get operating cash flow for {year}: {str(e)}")
-
                                     if row.get('diluted_shares') == 'N/A':
                                         try:
                                             yearly_shares = financials.get_yearly_shares_outstanding()
@@ -425,7 +425,7 @@ class DataService:
                             logger.warning(f"EODHD API failed to fill gaps: {str(e)}")
 
                     else:
-                        logger.info("No N/A values found, using ROIC data directly")
+                        logger.info("No missing values found, using ROIC data directly")
 
                     logger.info(f"Successfully got all data for {ticker}")
                     cleaned_ticker = self.clean_ticker_for_table_name(ticker)
