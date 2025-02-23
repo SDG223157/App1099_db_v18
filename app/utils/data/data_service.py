@@ -388,19 +388,19 @@ class DataService:
                                     year = str(row['fiscal_year'])
                                     
                                     # Try to fill missing values using dedicated methods
-                                    if row.get('operating_cash_flow') in ['N/A', 'None', None]:
+                                    if row.get('cf_cash_from_oper') in ['N/A', 'None', None]:
                                         try:
                                             yearly_cash_flows = financials.get_yearly_operating_cash_flow()
-                                            logger.info(f"Got yearly cash flows: {yearly_cash_flows}")  # Debug log
+                                            logger.info(f"Got yearly cash flows: {yearly_cash_flows}")
                                             
                                             if yearly_cash_flows and year in yearly_cash_flows:
                                                 cash_flow_value = yearly_cash_flows[year]
-                                                logger.info(f"Cash flow value for {year}: {cash_flow_value}")  # Debug log
+                                                logger.info(f"Cash flow value for {year}: {cash_flow_value}")
                                                 
                                                 if cash_flow_value is not None and cash_flow_value != 'None':
                                                     try:
                                                         float_value = float(cash_flow_value)
-                                                        combined_df.at[index, 'cf_cash_from_oper'] = float_value  # Use correct column name
+                                                        combined_df.at[index, 'cf_cash_from_oper'] = float_value
                                                         logger.info(f"Updated operating cash flow for {year}: {float_value}")
                                                     except ValueError as e:
                                                         logger.error(f"Could not convert cash flow value to float: {cash_flow_value}")
