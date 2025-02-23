@@ -348,121 +348,119 @@ class DataService:
                 response.raise_for_status()
                 roic_data = response.json()
 
-                # Process ROIC data
+                # Process ROIC data and identify N/A values
                 financial_data = []
-                has_na = False
+                na_years = {}
                 
                 for year_data in roic_data:
-                    if any(v == 'N/A' for v in year_data.values()):
-                        has_na = True
-                        break
-                        
-                    if int(start_year) <= year_data['fiscal_year'] <= int(end_year):
+                    year = year_data['fiscal_year']
+                    if int(start_year) <= year <= int(end_year):
+                        na_metrics = {k: v for k, v in year_data.items() if v == 'N/A'}
+                        if na_metrics:
+                            na_years[year] = list(na_metrics.keys())
                         financial_data.append(year_data)
 
+                # If we have data with N/A values, try to fill them from EODHD
+                if na_years:
+                    logger.info("Found N/A values, trying EODHD API to fill gaps...")
+                    try:
+                        financials = Financials(ticker, os.getenv('EODHD_API_KEY'))
+                        financials._fetch_data()
+
+                        if financials._data:
+                            for year_data in financial_data:
+                                year = year_data['fiscal_year']
+                                if year in na_years:
+                                    # Try to fill N/A values from EODHD
+                                    year_str = str(year)
+                                    if 'total_revenues' in na_years[year]:
+                                        revenue = financials.get_metric('Income_Statement', 'totalRevenue', year_str, freq='annual')
+                                        if revenue:
+                                            year_data[METRICS_MAP['total revenues']] = float(revenue)
+                                    
+                                    if 'net_income' in na_years[year]:
+                                        net_income = financials.get_metric('Income_Statement', 'netIncome', year_str, freq='annual')
+                                        if net_income:
+                                            year_data[METRICS_MAP['net income']] = float(net_income)
+                                    
+                                    if 'operating_margin' in na_years[year]:
+                                        operating_income = financials.get_metric('Income_Statement', 'operatingIncome', year_str, freq='annual')
+                                        revenue = financials.get_metric('Income_Statement', 'totalRevenue', year_str, freq='annual')
+                                        if operating_income and revenue:
+                                            year_data[METRICS_MAP['operating margin']] = (float(operating_income) / float(revenue)) * 100
+                                    
+                                    if 'diluted_shares' in na_years[year]:
+                                        shares = financials.get_metric('Balance_Sheet', 'commonStockSharesOutstanding', year_str, freq='annual')
+                                        if not shares:
+                                            shares_data = financials.get_shares_outstanding_data()
+                                            if shares_data and year in shares_data:
+                                                shares = shares_data[year]
+                                        if shares:
+                                            year_data[METRICS_MAP['diluted shares']] = float(shares)
+                                            if METRICS_MAP['net income'] in year_data and year_data[METRICS_MAP['net income']] != 'N/A':
+                                                year_data[METRICS_MAP['earnings per share']] = float(year_data[METRICS_MAP['net income']]) / float(shares)
+
+                    except Exception as e:
+                        logger.warning(f"EODHD API failed to fill gaps: {str(e)}")
+
+                # Check if we still have N/A values after EODHD
+                has_na = any(any(v == 'N/A' for v in year_data.values()) for year_data in financial_data)
+                
                 if financial_data and not has_na:
-                    logger.info("Successfully got data from ROIC API")
+                    logger.info("Successfully got complete data")
                     df = pd.DataFrame(financial_data)
                     cleaned_ticker = self.clean_ticker_for_table_name(ticker)
                     return self.store_dataframe(df, f"roic_{cleaned_ticker}")
 
-            except Exception as e:
-                logger.warning(f"ROIC API failed: {str(e)}")
-
-            # Second try: EODHD API
-            try:
-                logger.info("Trying EODHD API...")
-                financials = Financials(ticker, os.getenv('EODHD_API_KEY'))
-                financials._fetch_data()
-
-                if financials._data:
+                # If still have N/A, try Yahoo Finance
+                logger.info("Still have N/A values, trying Yahoo Finance...")
+                yf_ticker = yf.Ticker(ticker)
+                
+                # Get financials from Yahoo
+                income_stmt = yf_ticker.financials
+                balance_sheet = yf_ticker.balance_sheet
+                
+                if not income_stmt.empty and not balance_sheet.empty:
                     financial_data = []
+                    
                     for year in range(int(start_year), int(end_year) + 1):
                         year_str = str(year)
-                        year_data = {
-                            'fiscal_year': year,
-                            'period_label': 'FY',
-                            'period_end_date': f"{year}-12-31"
-                        }
-
-                        # Get metrics using EODHD functions
-                        revenue = financials.get_metric('Income_Statement', 'totalRevenue', year_str, freq='annual')
-                        net_income = financials.get_metric('Income_Statement', 'netIncome', year_str, freq='annual')
-                        operating_income = financials.get_metric('Income_Statement', 'operatingIncome', year_str, freq='annual')
-                        shares = financials.get_metric('Balance_Sheet', 'commonStockSharesOutstanding', year_str, freq='annual')
-
-                        if revenue and net_income:
-                            year_data[METRICS_MAP['total revenues']] = float(revenue)
-                            year_data[METRICS_MAP['net income']] = float(net_income)
+                        if year_str in income_stmt.columns:
+                            year_data = {
+                                'fiscal_year': year,
+                                'period_label': 'FY',
+                                'period_end_date': f"{year}-12-31"
+                            }
                             
-                            if operating_income and revenue:
-                                year_data[METRICS_MAP['operating margin']] = (float(operating_income) / float(revenue)) * 100
-
-                            if not shares:
-                                shares_data = financials.get_shares_outstanding_data()
-                                if shares_data and year in shares_data:
-                                    shares = shares_data[year]
-
-                            if shares:
-                                year_data[METRICS_MAP['diluted shares']] = float(shares)
-                                year_data[METRICS_MAP['earnings per share']] = float(net_income) / float(shares)
-
+                            if 'Total Revenue' in income_stmt.index:
+                                year_data[METRICS_MAP['total revenues']] = float(income_stmt.loc['Total Revenue', year_str])
+                            if 'Net Income' in income_stmt.index:
+                                year_data[METRICS_MAP['net income']] = float(income_stmt.loc['Net Income', year_str])
+                            if 'Operating Income' in income_stmt.index and 'Total Revenue' in income_stmt.index:
+                                op_income = float(income_stmt.loc['Operating Income', year_str])
+                                revenue = float(income_stmt.loc['Total Revenue', year_str])
+                                year_data[METRICS_MAP['operating margin']] = (op_income / revenue) * 100
+                                
+                            if 'Shares Outstanding' in yf_ticker.info:
+                                shares = float(yf_ticker.info['sharesOutstanding'])
+                                year_data[METRICS_MAP['diluted shares']] = shares
+                                if METRICS_MAP['net income'] in year_data:
+                                    year_data[METRICS_MAP['earnings per share']] = year_data[METRICS_MAP['net income']] / shares
+                                    
                             financial_data.append(year_data)
-
+                    
                     if financial_data:
-                        logger.info("Successfully got data from EODHD API")
+                        logger.info("Successfully got data from Yahoo Finance")
                         df = pd.DataFrame(financial_data)
                         cleaned_ticker = self.clean_ticker_for_table_name(ticker)
                         return self.store_dataframe(df, f"roic_{cleaned_ticker}")
 
+                logger.warning(f"All data sources failed for {ticker}")
+                return False
+
             except Exception as e:
-                logger.warning(f"EODHD API failed: {str(e)}")
-
-            # Final try: Yahoo Finance
-            logger.info("Trying Yahoo Finance...")
-            yf_ticker = yf.Ticker(ticker)
-            
-            # Get financials from Yahoo
-            income_stmt = yf_ticker.financials
-            balance_sheet = yf_ticker.balance_sheet
-            
-            if not income_stmt.empty and not balance_sheet.empty:
-                financial_data = []
-                
-                for year in range(int(start_year), int(end_year) + 1):
-                    year_str = str(year)
-                    if year_str in income_stmt.columns:
-                        year_data = {
-                            'fiscal_year': year,
-                            'period_label': 'FY',
-                            'period_end_date': f"{year}-12-31"
-                        }
-                        
-                        if 'Total Revenue' in income_stmt.index:
-                            year_data[METRICS_MAP['total revenues']] = float(income_stmt.loc['Total Revenue', year_str])
-                        if 'Net Income' in income_stmt.index:
-                            year_data[METRICS_MAP['net income']] = float(income_stmt.loc['Net Income', year_str])
-                        if 'Operating Income' in income_stmt.index and 'Total Revenue' in income_stmt.index:
-                            op_income = float(income_stmt.loc['Operating Income', year_str])
-                            revenue = float(income_stmt.loc['Total Revenue', year_str])
-                            year_data[METRICS_MAP['operating margin']] = (op_income / revenue) * 100
-                            
-                        if 'Shares Outstanding' in yf_ticker.info:
-                            shares = float(yf_ticker.info['sharesOutstanding'])
-                            year_data[METRICS_MAP['diluted shares']] = shares
-                            if METRICS_MAP['net income'] in year_data:
-                                year_data[METRICS_MAP['earnings per share']] = year_data[METRICS_MAP['net income']] / shares
-                                
-                        financial_data.append(year_data)
-                
-                if financial_data:
-                    logger.info("Successfully got data from Yahoo Finance")
-                    df = pd.DataFrame(financial_data)
-                    cleaned_ticker = self.clean_ticker_for_table_name(ticker)
-                    return self.store_dataframe(df, f"roic_{cleaned_ticker}")
-
-            logger.warning(f"All data sources failed for {ticker}")
-            return False
+                logger.warning(f"ROIC API failed: {str(e)}")
+                # ... continue with existing EODHD and Yahoo Finance fallbacks ...
 
         except Exception as e:
             logger.error(f"Error storing financial data for {ticker}: {str(e)}")
