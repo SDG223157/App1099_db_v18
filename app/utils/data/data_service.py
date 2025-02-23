@@ -363,9 +363,9 @@ class DataService:
                     combined_df = pd.concat(all_metrics_data, axis=1)
                     combined_df = combined_df.loc[:,~combined_df.columns.duplicated()]
                     
-                    # Add logging to check N/A and None values
-                    na_check = combined_df.isin(['N/A', 'None', None]).any()
-                    logger.info(f"Columns with missing values: {na_check[na_check].index.tolist()}")
+                    # Initialize cf_cash_from_oper column if it doesn't exist
+                    if 'cf_cash_from_oper' not in combined_df.columns:
+                        combined_df['cf_cash_from_oper'] = None
                     
                     # Check for N/A or None values
                     if combined_df.isin(['N/A', 'None', None]).any().any():
@@ -384,65 +384,23 @@ class DataService:
                             financials._fetch_data()
 
                             if financials._data:
+                                # Get all cash flows first
+                                yearly_cash_flows = financials.get_yearly_operating_cash_flow()
+                                logger.info(f"Got yearly cash flows: {yearly_cash_flows}")
+                                
                                 for index, row in combined_df.iterrows():
                                     year = str(row['fiscal_year'])
                                     
-                                    # Try to fill missing values using dedicated methods
-                                    if row.get('cf_cash_from_oper') in ['N/A', 'None', None]:
-                                        try:
-                                            yearly_cash_flows = financials.get_yearly_operating_cash_flow()
-                                            logger.info(f"Got yearly cash flows: {yearly_cash_flows}")
-                                            
-                                            if yearly_cash_flows and year in yearly_cash_flows:
-                                                cash_flow_value = yearly_cash_flows[year]
-                                                logger.info(f"Cash flow value for {year}: {cash_flow_value}")
-                                                
-                                                if cash_flow_value is not None and cash_flow_value != 'None':
-                                                    try:
-                                                        float_value = float(cash_flow_value)
-                                                        combined_df.at[index, 'cf_cash_from_oper'] = float_value
-                                                        logger.info(f"Updated operating cash flow for {year}: {float_value}")
-                                                    except ValueError as e:
-                                                        logger.error(f"Could not convert cash flow value to float: {cash_flow_value}")
-                                                else:
-                                                    logger.warning(f"Got null value for operating cash flow in {year}")
-                                        except Exception as e:
-                                            logger.warning(f"Failed to get operating cash flow for {year}: {str(e)}")
-                                    
-                                    if row.get('total_revenues') == 'N/A':
-                                        try:
-                                            yearly_revenues = financials.get_yearly_revenues()
-                                            if yearly_revenues and year in yearly_revenues:
-                                                combined_df.at[index, 'total_revenues'] = float(yearly_revenues[year])
-                                        except Exception as e:
-                                            logger.warning(f"Failed to get revenues for {year}: {str(e)}")
-                                    
-                                    if row.get('net_income') == 'N/A':
-                                        try:
-                                            yearly_net_income = financials.get_yearly_net_income()
-                                            if yearly_net_income and year in yearly_net_income:
-                                                combined_df.at[index, 'net_income'] = float(yearly_net_income[year])
-                                        except Exception as e:
-                                            logger.warning(f"Failed to get net income for {year}: {str(e)}")
-                                    
-                                    if row.get('operating_margin') == 'N/A':
-                                        try:
-                                            yearly_margins = financials.get_yearly_operating_margins()
-                                            if yearly_margins and year in yearly_margins:
-                                                combined_df.at[index, 'operating_margin'] = float(yearly_margins[year])
-                                        except Exception as e:
-                                            logger.warning(f"Failed to get operating margin for {year}: {str(e)}")
-
-                                    if row.get('diluted_shares') == 'N/A':
-                                        try:
-                                            yearly_shares = financials.get_yearly_shares_outstanding()
-                                            if yearly_shares and year in yearly_shares:
-                                                shares = yearly_shares[year]
-                                                combined_df.at[index, 'diluted_shares'] = float(shares)
-                                                if row.get('net_income') != 'N/A':
-                                                    combined_df.at[index, 'earnings_per_share'] = float(row['net_income']) / float(shares)
-                                        except Exception as e:
-                                            logger.warning(f"Failed to get shares for {year}: {str(e)}")
+                                    # Update cash flow values
+                                    if yearly_cash_flows and year in yearly_cash_flows:
+                                        cash_flow_value = yearly_cash_flows[year]
+                                        if cash_flow_value is not None and cash_flow_value != 'None':
+                                            try:
+                                                float_value = float(cash_flow_value)
+                                                combined_df.at[index, 'cf_cash_from_oper'] = float_value
+                                                logger.info(f"Updated operating cash flow for {year}: {float_value}")
+                                            except ValueError as e:
+                                                logger.error(f"Could not convert cash flow value to float: {cash_flow_value}")
                         except Exception as e:
                             logger.warning(f"EODHD API failed to fill gaps: {str(e)}")
 
