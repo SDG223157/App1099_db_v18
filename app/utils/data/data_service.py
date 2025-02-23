@@ -384,20 +384,18 @@ class DataService:
                             financials._fetch_data()
 
                             if financials._data:
-                                # Get all cash flows first
                                 yearly_cash_flows = financials.get_yearly_operating_cash_flow()
                                 logger.info(f"Got yearly cash flows: {yearly_cash_flows}")
                                 
-                                for index, row in combined_df.iterrows():
-                                    year = str(row['fiscal_year'])
-                                    
-                                    # Update cash flow values
-                                    if yearly_cash_flows and year in yearly_cash_flows:
-                                        cash_flow_value = yearly_cash_flows[year]
+                                # Update cash flows for each year in the DataFrame
+                                for year in yearly_cash_flows:
+                                    year_mask = combined_df['fiscal_year'].astype(str) == str(year)
+                                    if year_mask.any():
+                                        cash_flow_value = yearly_cash_flows[str(year)]
                                         if cash_flow_value is not None and cash_flow_value != 'None':
                                             try:
                                                 float_value = float(cash_flow_value)
-                                                combined_df.at[index, 'cf_cash_from_oper'] = float_value
+                                                combined_df.loc[year_mask, 'cf_cash_from_oper'] = float_value
                                                 logger.info(f"Updated operating cash flow for {year}: {float_value}")
                                             except ValueError as e:
                                                 logger.error(f"Could not convert cash flow value to float: {cash_flow_value}")
