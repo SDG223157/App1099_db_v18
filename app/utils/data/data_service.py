@@ -232,7 +232,7 @@ class DataService:
                 
                 # Check if data needs updating (more than 10 days old)
                 days_difference = (pd.to_datetime(current_date) - pd.to_datetime(db_end)).days
-                if days_difference >= 1:
+                if days_difference >= 0:
                     logging.info(f"Data is {days_difference} days old. Updating from yfinance...")
                     
                     # Delete the last 10 days of data
