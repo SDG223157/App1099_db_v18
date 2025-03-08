@@ -13,6 +13,11 @@
         box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
         width: 95%;
         max-width: 1100px;
+        {% if not current_user.is_authenticated %}
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        {% endif %}
     }
     
     /* Update form-fields layout */
@@ -20,23 +25,34 @@
         display: grid;
         gap: 10px;
         width: 100%;
+        {% if not current_user.is_authenticated %}
+        max-width: 500px;
+        {% endif %}
     }
     
     /* Mobile-first: stack vertically */
     @media (min-width: 768px) {
         .form-fields {
+            {% if current_user.is_authenticated %}
             grid-template-columns: 50% 1fr; /* Ticker takes 50%, rest share remaining space */
+            {% endif %}
         }
         
         .ticker-group {
+            {% if current_user.is_authenticated %}
             grid-column: 1; /* Take first column */
+            {% else %}
+            width: 100%;  /* Full width when not logged in */
+            {% endif %}
         }
         
         .other-inputs {
+            {% if current_user.is_authenticated %}
             grid-column: 2; /* Take second column */
             display: grid;
             grid-template-columns: repeat(3, 1fr); /* Split into 3 equal columns */
             gap: 10px;
+            {% endif %}
         }
 
         /* Adjust input sizes to fit content */
@@ -95,7 +111,10 @@
         display: grid;
         gap: 10px;
         grid-template-columns: 1fr;
-        align-items: stretch;  /* Ensure buttons stretch to same height */
+        align-items: stretch;
+        {% if not current_user.is_authenticated %}
+        max-width: 500px;
+        {% endif %}
     }
 
     .button-container.has-news {
@@ -485,6 +504,29 @@
             
             if (!ticker) {
                 alert('Please enter a ticker symbol');
+                return;
+            }
+            
+            // Check if it's a mobile device
+            const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent) 
+                || (navigator.maxTouchPoints && navigator.maxTouchPoints > 2);
+            
+            // For mobile devices, use quick_analyze endpoint and open in new tab
+            if (isMobile) {
+                const form = document.createElement('form');
+                form.method = 'POST';
+                form.action = '/quick_analyze';
+                form.target = '_blank';
+                
+                const tickerInput = document.createElement('input');
+                tickerInput.type = 'hidden';
+                tickerInput.name = 'ticker';
+                tickerInput.value = ticker;
+                
+                form.appendChild(tickerInput);
+                document.body.appendChild(form);
+                form.submit();
+                document.body.removeChild(form);
                 return;
             }
             
