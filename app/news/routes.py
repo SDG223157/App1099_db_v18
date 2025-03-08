@@ -245,6 +245,14 @@ def search():
                     ArticleSymbol.symbol == search_symbol
                 ]
                 query = query.filter(NewsArticle.symbols.any(or_(*symbol_conditions)))
+            # For US stocks with exchange prefix, try both exchanges
+            elif search_symbol.startswith(('NYSE:', 'NASDAQ:')):
+                base_symbol = search_symbol.split(':')[1]
+                symbol_conditions = [
+                    ArticleSymbol.symbol == f"NYSE:{base_symbol}",
+                    ArticleSymbol.symbol == f"NASDAQ:{base_symbol}"
+                ]
+                query = query.filter(NewsArticle.symbols.any(or_(*symbol_conditions)))
             else:
                 query = query.filter(NewsArticle.symbols.any(ArticleSymbol.symbol == search_symbol))
 
