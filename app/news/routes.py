@@ -1122,8 +1122,8 @@ def irregular_ai_content():
         query = NewsArticle.query.filter(
             db.or_(
                 # Short or invalid content
-                db.and_(NewsArticle.ai_summary.isnot(None), db.func.length(NewsArticle.ai_summary) < 100),
-                db.and_(NewsArticle.ai_insights.isnot(None), db.func.length(NewsArticle.ai_insights) < 100),
+                db.and_(NewsArticle.ai_summary.isnot(None), db.func.length(NewsArticle.ai_summary) < 50),
+                db.and_(NewsArticle.ai_insights.isnot(None), db.func.length(NewsArticle.ai_insights) < 50),
                 # Error markers in content
                 db.and_(NewsArticle.ai_summary.isnot(None), NewsArticle.ai_summary.contains('error')),
                 db.and_(NewsArticle.ai_insights.isnot(None), NewsArticle.ai_insights.contains('error')),
