@@ -82,40 +82,59 @@ def init_analytics():
 @bp.route('/')
 @login_required
 def index():
+    """News dashboard homepage."""
     try:
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=7)
+        period = request.args.get('period', 'day')
+        symbol = request.args.get('symbol', 'all')
+        days = 7 if period == 'week' else (30 if period == 'month' else 1)
+
+        # Get latest articles
+        latest_articles = NewsArticle.query.order_by(
+            NewsArticle.published_at.desc()
+        ).limit(10).all()
+
+        # Get most mentioned symbols
+        trending_symbols = news_service.get_trending_symbols(days=days)
+
+        # Get sentiment distribution
+        sentiment_data = news_service.get_overall_sentiment(days=days)
         
-        articles, total = news_service.get_articles_by_date_range(
-            start_date=start_date.strftime("%Y-%m-%d"),
-            end_date=end_date.strftime("%Y-%m-%d"),
-            page=1,
-            per_page=10
-        )
-        
-        sentiment_summary = news_service.get_sentiment_summary(days=7)
-        sentiment_summary['total_articles'] = total  # Ensure total_articles is set
-        
+        # Fix the sentiment_summary structure to match what the template expects
+        sentiment_summary = {
+            'sentiment_distribution': {
+                'positive': sentiment_data.get('positive', 0),
+                'neutral': sentiment_data.get('neutral', 0),
+                'negative': sentiment_data.get('negative', 0)
+            },
+            'overall_score': sentiment_data.get('overall_score', 0),
+            'total_articles': sentiment_data.get('total_articles', 0)
+        }
+
         return render_template(
             'news/analysis.html',
-            articles=articles,
-            total_articles=total,
+            latest_articles=latest_articles,
+            trending_symbols=trending_symbols,
             sentiment_summary=sentiment_summary,
-            trending_topics=[],
-            start_date=start_date.strftime("%Y-%m-%d"),
-            end_date=end_date.strftime("%Y-%m-%d")
+            period=period,
+            symbol=symbol
         )
-        
     except Exception as e:
-        logger.error(f"Error in news index route: {str(e)}", exc_info=True)
+        logger.error(f"Error in news index: {str(e)}")
+        db.session.rollback()  # Rollback in case of error
         return render_template(
             'news/analysis.html',
-            error="Failed to load news dashboard",
-            articles=[],
-            total_articles=0,
-            sentiment_summary={'total_articles': 0, 'average_sentiment': 0},
-            trending_topics=[]
+            error=str(e),
+            latest_articles=[],
+            trending_symbols=[],
+            sentiment_summary={
+                'sentiment_distribution': {'positive': 0, 'neutral': 0, 'negative': 0},
+                'overall_score': 0,
+                'total_articles': 0
+            },
+            period=request.args.get('period', 'day'),
+            symbol=request.args.get('symbol', 'all')
         )
+
 @bp.route('/fetch')
 @login_required
 def fetch():
@@ -425,8 +444,8 @@ def initialize_articles(cutoff_time: str) -> None:
 @login_required
 def get_articles_to_update():
     try:
-        # Fetch the articles that need to be updated
-        articles = NewsArticle.query.filter(
+        # Only fetch articles with missing AI fields
+        missing_fields_articles = NewsArticle.query.filter(
             db.or_(
                 NewsArticle.ai_summary.is_(None),
                 NewsArticle.ai_insights.is_(None),
@@ -434,11 +453,31 @@ def get_articles_to_update():
             ),
             NewsArticle.content.isnot(None)
         ).all()
+        
+        # Still count irregular articles separately for reporting,
+        # but don't include them in the total to process
+        irregular_articles = NewsArticle.query.filter(
+            db.or_(
+                # Short or invalid content
+                db.and_(NewsArticle.ai_summary.isnot(None), db.func.length(NewsArticle.ai_summary) < 100),
+                db.and_(NewsArticle.ai_insights.isnot(None), db.func.length(NewsArticle.ai_insights) < 100),
+                # Error markers in content
+                db.and_(NewsArticle.ai_summary.isnot(None), NewsArticle.ai_summary.contains('error')),
+                db.and_(NewsArticle.ai_insights.isnot(None), NewsArticle.ai_insights.contains('error')),
+                # Summary contains placeholders left unchanged
+                db.and_(NewsArticle.ai_summary.isnot(None), NewsArticle.ai_summary.contains('Keyword 1')),
+                db.and_(NewsArticle.ai_insights.isnot(None), NewsArticle.ai_insights.contains('Insight 1'))
+            ),
+            NewsArticle.content.isnot(None)
+        ).all()
 
         # Return the count of articles to be updated
         return jsonify({
             'status': 'success',
-            'count': len(articles)
+            'count': len(missing_fields_articles),
+            'missing_fields_count': len(missing_fields_articles),
+            'irregular_count': len(irregular_articles),
+            'process_irregular': False  # Flag indicating we don't process irregular content in batch
         })
     except Exception as e:
         logger.error(f"Error getting articles to update: {str(e)}")
@@ -474,8 +513,6 @@ def get_latest_articles_wrapup():
 @login_required
 def update_ai_summaries():
     try:
-        # initialize_articles(cutoff_time="2020-02-02 00:00:00")
-        # exit()
         import requests
 
         OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY')
@@ -486,6 +523,7 @@ def update_ai_summaries():
             "Content-Type": "application/json"
         }
 
+        # Only fetch articles with missing AI fields, not irregular ones
         articles = NewsArticle.query.filter(
             db.or_(
                 NewsArticle.ai_summary.is_(None),
@@ -494,15 +532,21 @@ def update_ai_summaries():
             ),
             NewsArticle.content.isnot(None)
         ).order_by(NewsArticle.id.desc()).limit(10).all()
-
+        
+        logger.info(f"Processing {len(articles)} articles with missing AI fields")
+        
         processed = 0
         results = []
 
         for article in articles:
             try:
+                ai_summary = None
+                ai_insights = None
+                ai_sentiment_rating = None
+                
                 if not article.ai_summary:
                     summary_payload = {
-                        "model": "anthropic/claude-3.5-sonnet:beta", # You can choose a different model if needed
+                        "model": "anthropic/claude-3.7-sonnet",
                         "messages": [
                             {
                                 "role": "user",
@@ -526,15 +570,15 @@ Use proper line breaks between list items. Article: {article.content}"""
                     }
                     summary_response = requests.post(OPENROUTER_API_URL, headers=headers, json=summary_payload)
                     summary_response.raise_for_status()
-                    article.ai_summary = summary_response.json()['choices'][0]['message']['content']
+                    ai_summary = summary_response.json()['choices'][0]['message']['content']
 
                 if not article.ai_insights:
                     insights_payload = {
-                        "model": "anthropic/claude-3.5-sonnet:beta",  # You can choose a different model if needed
+                        "model": "anthropic/claude-3.7-sonnet",
                         "messages": [
                             {
                                 "role": "user",
-                               "content": f"""Generate financial insights with STRICT markdown formatting:
+                                "content": f"""Generate financial insights with STRICT markdown formatting:
 **Key Insights**  
 - Insight 1  
 - Insight 2  
@@ -553,11 +597,11 @@ Use proper line breaks between list items. Article: {article.content}"""
                     }
                     insights_response = requests.post(OPENROUTER_API_URL, headers=headers, json=insights_payload)
                     insights_response.raise_for_status()
-                    article.ai_insights = insights_response.json()['choices'][0]['message']['content']
+                    ai_insights = insights_response.json()['choices'][0]['message']['content']
 
                 if article.ai_sentiment_rating is None:
                     sentiment_payload = {
-                        "model":  "anthropic/claude-3.5-sonnet:beta",  # You can choose a different model if needed
+                        "model": "anthropic/claude-3.7-sonnet",
                         "messages": [
                             {
                                 "role": "user",
@@ -570,23 +614,56 @@ Use proper line breaks between list items. Article: {article.content}"""
                     sentiment_response.raise_for_status()
                     try:
                         rating = int(sentiment_response.json()['choices'][0]['message']['content'].strip())
-                        # Ensure rating is within bounds
-                        article.ai_sentiment_rating = max(min(rating, 100), -100)
+                        ai_sentiment_rating = max(min(rating, 100), -100)
                     except ValueError:
                         logger.error(f"Could not parse sentiment rating for article {article.id}")
-                        article.ai_sentiment_rating = 0
+                        ai_sentiment_rating = 0
 
-                db.session.commit()
-                processed += 1
-                results.append({
-                    'id': article.id,
-                    'title': article.title,
-                    'ai_sentiment_rating': article.ai_sentiment_rating
-                })
+                # Calculate total content length to verify if processing was successful
+                total_content = ""
+                if ai_summary:
+                    total_content += ai_summary
+                if ai_insights:
+                    total_content += ai_insights
+                if ai_sentiment_rating is not None:
+                    total_content += str(ai_sentiment_rating)
+                
+                # Only save if total content length is adequate (at least 100 characters)
+                if len(total_content) >= 100:
+                    if ai_summary:
+                        article.ai_summary = ai_summary
+                    if ai_insights:
+                        article.ai_insights = ai_insights
+                    if ai_sentiment_rating is not None:
+                        article.ai_sentiment_rating = ai_sentiment_rating
+                        
+                    db.session.commit()
+                    processed += 1
+                    results.append({
+                        'id': article.id,
+                        'title': article.title,
+                        'ai_sentiment_rating': article.ai_sentiment_rating,
+                        'success': True,
+                        'reprocessed': False
+                    })
+                else:
+                    logger.warning(f"AI processing for article {article.id} yielded insufficient content ({len(total_content)} characters). Skipping.")
+                    results.append({
+                        'id': article.id,
+                        'title': article.title,
+                        'success': False,
+                        'reason': 'Insufficient AI-generated content length'
+                    })
 
             except Exception as e:
                 logger.error(f"Error processing article {article.id}: {str(e)}")
                 db.session.rollback()
+                results.append({
+                    'id': article.id,
+                    'title': article.title if hasattr(article, 'title') else 'Unknown',
+                    'success': False,
+                    'reason': str(e)
+                })
                 continue
 
         return jsonify({
@@ -598,93 +675,6 @@ Use proper line breaks between list items. Article: {article.content}"""
     except Exception as e:
         logger.error(f"Error: {str(e)}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
-
-# @bp.route('/api/update-summaries', methods=['POST'])
-# @login_required
-# def update_ai_summaries():
-#     try:
-#         client = OpenAI(
-#             api_key=os.getenv('DEEPSEEK_API_KEY'),
-#             base_url="https://api.deepseek.com",
-#             timeout=120.0
-#         )
-        
-#         articles = NewsArticle.query.filter(
-#             db.or_(
-#                 NewsArticle.ai_summary.is_(None),
-#                 NewsArticle.ai_insights.is_(None),
-#                 NewsArticle.ai_sentiment_rating.is_(None)
-#             ),
-#             NewsArticle.content.isnot(None)
-#         ).limit(10).all()
-        
-#         processed = 0
-#         results = []
-        
-#         for article in articles:
-#             try:
-#                 if not article.ai_summary:
-#                     summary_response = client.chat.completions.create(
-#                         model="deepseek-chat",
-#                         messages=[
-#                             {"role": "system", "content": "Generate a concise summary of this news article."},
-#                             {"role": "user", "content": article.content}
-#                         ],
-#                         max_tokens=250
-#                     )
-#                     article.ai_summary = summary_response.choices[0].message.content
-
-#                 if not article.ai_insights:
-#                     insights_response = client.chat.completions.create(
-#                         model="deepseek-chat",
-#                         messages=[
-#                             {"role": "system", "content": "Extract key financial insights and implications from this article."},
-#                             {"role": "user", "content": article.content}
-#                         ],
-#                         max_tokens=250
-#                     )
-#                     article.ai_insights = insights_response.choices[0].message.content
-
-#                 if article.ai_sentiment_rating is None:
-#                     sentiment_response = client.chat.completions.create(
-#                         model="deepseek-chat",
-#                         messages=[
-#                             {"role": "system", "content": "Analyze the sentiment of this article and provide a rating from -100 (extremely negative) to 100 (extremely positive). Return only the number."},
-#                             {"role": "user", "content": article.content}
-#                         ],
-#                         max_tokens=10
-#                     )
-#                     try:
-#                         rating = int(sentiment_response.choices[0].message.content.strip())
-#                         # Ensure rating is within bounds
-#                         article.ai_sentiment_rating = max(min(rating, 100), -100)
-#                     except ValueError:
-#                         logger.error(f"Could not parse sentiment rating for article {article.id}")
-#                         article.ai_sentiment_rating = 0
-
-#                 db.session.commit()
-#                 processed += 1
-#                 results.append({
-#                     'id': article.id, 
-#                     'title': article.title,
-#                     'ai_sentiment_rating': article.ai_sentiment_rating
-#                 })
-                
-#             except Exception as e:
-#                 logger.error(f"Error processing article {article.id}: {str(e)}")
-#                 db.session.rollback()
-#                 continue
-                
-#         return jsonify({
-#             'status': 'success',
-#             'processed': processed,
-#             'articles': results
-#         })
-        
-#     except Exception as e:
-#         logger.error(f"Error: {str(e)}")
-#         return jsonify({'status': 'error', 'message': str(e)}), 500
-
 
 @bp.route('/api/sentiment')
 @login_required
@@ -1118,3 +1108,182 @@ def delete_article(article_id):
         db.session.rollback()
         logger.error(f"Error deleting article {article_id}: {str(e)}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@bp.route('/irregular-ai-content')
+@login_required
+@admin_required
+def irregular_ai_content():
+    """Display articles with irregular AI content for review and reprocessing"""
+    try:
+        page = request.args.get('page', 1, type=int)
+        per_page = 10
+        
+        # Find articles with potentially irregular AI processing
+        query = NewsArticle.query.filter(
+            db.or_(
+                # Short or invalid content
+                db.and_(NewsArticle.ai_summary.isnot(None), db.func.length(NewsArticle.ai_summary) < 100),
+                db.and_(NewsArticle.ai_insights.isnot(None), db.func.length(NewsArticle.ai_insights) < 100),
+                # Error markers in content
+                db.and_(NewsArticle.ai_summary.isnot(None), NewsArticle.ai_summary.contains('error')),
+                db.and_(NewsArticle.ai_insights.isnot(None), NewsArticle.ai_insights.contains('error')),
+                # Summary contains placeholders left unchanged
+                db.and_(NewsArticle.ai_summary.isnot(None), NewsArticle.ai_summary.contains('Keyword 1')),
+                db.and_(NewsArticle.ai_insights.isnot(None), NewsArticle.ai_insights.contains('Insight 1'))
+            ),
+            NewsArticle.content.isnot(None)
+        ).order_by(NewsArticle.id.desc())
+        
+        # Paginate results
+        articles = query.paginate(page=page, per_page=per_page)
+        
+        return render_template(
+            'news/irregular_ai_content.html',
+            articles=articles
+        )
+        
+    except Exception as e:
+        logger.error(f"Error displaying irregular AI content: {str(e)}")
+        return render_template(
+            'news/irregular_ai_content.html',
+            error=str(e),
+            articles=None
+        )
+
+@bp.route('/api/reprocess-article/<int:article_id>', methods=['POST'])
+@login_required
+@admin_required
+def reprocess_article(article_id):
+    """Reprocess AI content for a single article"""
+    try:
+        import requests
+        
+        # Get the article
+        article = NewsArticle.query.get_or_404(article_id)
+        
+        if not article.content:
+            return jsonify({
+                'status': 'error',
+                'message': 'Cannot reprocess article with no content'
+            }), 400
+        
+        OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY')
+        OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+        headers = {
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        # Process summary
+        summary_payload = {
+            "model": "anthropic/claude-3.7-sonnet",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": f"""Generate summary with STRICT markdown formatting:
+**Key Concepts/Keywords**  
+- Keyword 1  
+- Keyword 2  
+
+**Key Points**  
+- Point 1  
+- Point 2  
+
+**Context**  
+- Background 1  
+- Background 2  
+
+Use proper line breaks between list items. Article: {article.content}"""
+                }
+            ],
+            "max_tokens": 500
+        }
+        summary_response = requests.post(OPENROUTER_API_URL, headers=headers, json=summary_payload)
+        summary_response.raise_for_status()
+        ai_summary = summary_response.json()['choices'][0]['message']['content']
+        
+        # Process insights
+        insights_payload = {
+            "model": "anthropic/claude-3.7-sonnet",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": f"""Generate financial insights with STRICT markdown formatting:
+**Key Insights**  
+- Insight 1  
+- Insight 2  
+
+**Market Implications**  
+- Implication 1  
+- Implication 2  
+
+**Conclusion**  
+- Clear one-sentence conclusion  
+
+Use proper line breaks between list items. Article: {article.content}"""
+                }
+            ],
+            "max_tokens": 500
+        }
+        insights_response = requests.post(OPENROUTER_API_URL, headers=headers, json=insights_payload)
+        insights_response.raise_for_status()
+        ai_insights = insights_response.json()['choices'][0]['message']['content']
+        
+        # Process sentiment
+        sentiment_payload = {
+            "model": "anthropic/claude-3.7-sonnet",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": f"Analyze the market sentiment of this article and provide a single number rating from -100 (extremely bearish) to 100 (extremely bullish). Only return the number: {article.content}"
+                }
+            ],
+            "max_tokens": 10
+        }
+        sentiment_response = requests.post(OPENROUTER_API_URL, headers=headers, json=sentiment_payload)
+        sentiment_response.raise_for_status()
+        
+        try:
+            rating = int(sentiment_response.json()['choices'][0]['message']['content'].strip())
+            ai_sentiment_rating = max(min(rating, 100), -100)
+        except ValueError:
+            logger.error(f"Could not parse sentiment rating for article {article.id}")
+            ai_sentiment_rating = 0
+        
+        # Calculate total content length to verify if processing was successful
+        total_content = ai_summary + ai_insights + str(ai_sentiment_rating)
+        
+        if len(total_content) < 100:
+            return jsonify({
+                'status': 'error',
+                'message': 'Generated AI content is too short - processing may have failed'
+            }), 400
+        
+        # Update the article
+        article.ai_summary = ai_summary
+        article.ai_insights = ai_insights
+        article.ai_sentiment_rating = ai_sentiment_rating
+        
+        # Save changes
+        db.session.commit()
+        
+        # Return success
+        return jsonify({
+            'status': 'success',
+            'message': 'Article successfully reprocessed',
+            'article': {
+                'id': article.id,
+                'title': article.title,
+                'ai_summary': article.ai_summary,
+                'ai_insights': article.ai_insights,
+                'ai_sentiment_rating': article.ai_sentiment_rating
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"Error reprocessing article {article_id}: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 500
