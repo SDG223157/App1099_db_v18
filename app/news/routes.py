@@ -321,41 +321,53 @@ def fetch_news():
     try:
         data = request.get_json()
         if not data:
-            return jsonify({'error': 'No data provided'}), HTTPStatus.BAD_REQUEST
+            return jsonify({'status': 'error', 'message': 'No data provided'}), HTTPStatus.BAD_REQUEST
             
         symbols = data.get('symbols', [])
         if not symbols:
-            return jsonify({'error': 'No symbols provided'}), HTTPStatus.BAD_REQUEST
+            return jsonify({'status': 'error', 'message': 'No symbols provided'}), HTTPStatus.BAD_REQUEST
             
         limit = min(int(data.get('limit', 10)), 50)  # Cap limit at 50
+        timeout = int(data.get('timeout', 30))  # Allow configurable timeout, default 30s
         
         logger.info(f"Fetching news for symbols: {symbols}, limit: {limit}")
-        articles = news_service.fetch_and_analyze_news(symbols=symbols, limit=limit)
         
-        return jsonify({
-            'status': 'success',
-            'message': f'Successfully fetched {len(articles)} articles',
-            'articles': articles
-        })
-        
+        try:
+            # Add a timeout to the news service call
+            articles = news_service.fetch_and_analyze_news(
+                symbols=symbols, 
+                limit=limit,
+                timeout=timeout
+            )
+            
+            if not articles and len(symbols) > 0:
+                logger.warning(f"No articles found for symbols: {symbols}")
+                return jsonify({
+                    'status': 'success',
+                    'message': 'No articles found',
+                    'articles': []
+                })
+            
+            return jsonify({
+                'status': 'success',
+                'message': f'Successfully fetched {len(articles)} articles',
+                'articles': articles
+            })
+        except Exception as service_error:
+            logger.error(f"News service error for symbols {symbols}: {str(service_error)}", exc_info=True)
+            return jsonify({
+                'status': 'error',
+                'message': f'News service error: {str(service_error)}',
+                'symbols': symbols
+            }), HTTPStatus.SERVICE_UNAVAILABLE
+            
     except Exception as e:
         logger.error(f"Error fetching news: {str(e)}", exc_info=True)
         return jsonify({
             'status': 'error',
-            'message': 'Failed to fetch news',
-            'error': str(e)
+            'message': f'Failed to fetch news: {str(e)}',
         }), HTTPStatus.INTERNAL_SERVER_ERROR
-        
-        
-# Add at top level of routes.py
-# DEFAULT_SYMBOLS = [
-#    "NASDAQ:AAPL", "NASDAQ:MSFT", "NASDAQ:AMZN", "NASDAQ:GOOGL", "NASDAQ:META",
-#    "NASDAQ:NVDA", "NASDAQ:TSLA", "NYSE:BRK.A", "NYSE:V", "NYSE:JPM",
-#    "NYSE:JNJ", "NYSE:WMT", "NYSE:MA", "NYSE:PG", "NASDAQ:AVGO",
-#    "NYSE:CVX", "NYSE:HD", "NYSE:MRK", "NYSE:KO", "NASDAQ:PEP", 
-#    "NYSE:BAC", "NYSE:DIS", "NASDAQ:COST", "NASDAQ:CSCO", "NYSE:VZ",
-#    "NYSE:ABT", "NASDAQ:ADBE", "NASDAQ:CMCSA", "NYSE:NKE", "NYSE:TMO"
-# ]
+
 @bp.route('/api/batch-fetch', methods=['POST'])
 @login_required
 def batch_fetch():
@@ -459,8 +471,8 @@ def get_articles_to_update():
         irregular_articles = NewsArticle.query.filter(
             db.or_(
                 # Short or invalid content
-                db.and_(NewsArticle.ai_summary.isnot(None), db.func.length(NewsArticle.ai_summary) < 100),
-                db.and_(NewsArticle.ai_insights.isnot(None), db.func.length(NewsArticle.ai_insights) < 100),
+                db.and_(NewsArticle.ai_summary.isnot(None), db.func.length(NewsArticle.ai_summary) < 50),
+                db.and_(NewsArticle.ai_insights.isnot(None), db.func.length(NewsArticle.ai_insights) < 50),
                 # Error markers in content
                 db.and_(NewsArticle.ai_summary.isnot(None), NewsArticle.ai_summary.contains('error')),
                 db.and_(NewsArticle.ai_insights.isnot(None), NewsArticle.ai_insights.contains('error')),
@@ -1122,8 +1134,8 @@ def irregular_ai_content():
         query = NewsArticle.query.filter(
             db.or_(
                 # Short or invalid content
-                db.and_(NewsArticle.ai_summary.isnot(None), db.func.length(NewsArticle.ai_summary) < 50),
-                db.and_(NewsArticle.ai_insights.isnot(None), db.func.length(NewsArticle.ai_insights) < 50),
+                db.and_(NewsArticle.ai_summary.isnot(None), db.func.length(NewsArticle.ai_summary) < 100),
+                db.and_(NewsArticle.ai_insights.isnot(None), db.func.length(NewsArticle.ai_insights) < 100),
                 # Error markers in content
                 db.and_(NewsArticle.ai_summary.isnot(None), NewsArticle.ai_summary.contains('error')),
                 db.and_(NewsArticle.ai_insights.isnot(None), NewsArticle.ai_insights.contains('error')),

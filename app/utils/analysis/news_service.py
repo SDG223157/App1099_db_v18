@@ -12,6 +12,9 @@ from .news_analyzer import NewsAnalyzer
 from app.models import NewsArticle, ArticleSymbol  # Add at top
 from sqlalchemy import func, or_  # Add this import
 from app import db  # Add this import
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 class NewsAnalysisService:
     def __init__(self):
@@ -19,6 +22,7 @@ class NewsAnalysisService:
         self.logger = logging.getLogger(__name__)
         self.analyzer = NewsAnalyzer("apify_api_ewwcE7264pu0eRgeUBL2RaFk6rmCdy4AaAU9")
         self.db = NewsService()
+
     def get_news_by_date_range(self, start_date, end_date, symbol=None, page=1, per_page=20):
         try:
             return self.db.get_articles_by_date_range(
@@ -144,10 +148,8 @@ class NewsAnalysisService:
         except Exception as e:
             self.logger.error(f"Error closing resources: {str(e)}")
         
-    def fetch_and_analyze_news(self, symbols: List[str], limit: int = 10) -> List[Dict]:
-        """
-        Fetch news articles from Apify, analyze them, and store in database
-        """
+    def fetch_and_analyze_news(self, symbols, limit=10, timeout=30):
+        """Fetch and analyze news for the given symbols with improved error handling"""
         try:
             self.logger.info(f"Starting news fetch for symbols: {symbols}")
             
@@ -155,6 +157,23 @@ class NewsAnalysisService:
                 self.logger.error(f"Invalid input parameters: symbols={symbols}, limit={limit}")
                 return []
 
+            # Connect with retries and longer timeouts
+            session = requests.Session()
+            retries = Retry(total=3, 
+                          backoff_factor=0.5,
+                          status_forcelist=[429, 500, 502, 503, 504])
+            
+            session.mount('https://', HTTPAdapter(max_retries=retries))
+            
+            # Normalize symbols (some exchanges need special handling)
+            normalized_symbols = []
+            for symbol in symbols:
+                try:
+                    normalized = self._normalize_symbol(symbol)
+                    normalized_symbols.append(normalized)
+                except Exception as e:
+                    self.logger.warning(f"Symbol normalization error for {symbol}: {str(e)}")
+            
             # 1. Fetch raw news
             raw_articles = self.analyzer.get_news(symbols, limit)
             if not raw_articles:
@@ -187,68 +206,6 @@ class NewsAnalysisService:
         except Exception as e:
             self.logger.error(f"Error in fetch_and_analyze_news: {str(e)}")
             return []
-
-    
-    # def get_sentiment_summary(
-    #     self,
-    #     date: str = None,
-    #     symbol: str = None,
-    #     days: int = 7
-    # ) -> Dict:
-    #     """
-    #     Get sentiment summary statistics
-        
-    #     Args:
-    #         date (str, optional): Specific date for summary
-    #         symbol (str, optional): Filter by symbol
-    #         days (int): Number of days to analyze if no specific date
-            
-    #     Returns:
-    #         Dict: Sentiment summary statistics
-    #     """
-    #     try:
-    #         if date:
-    #             return self.db.get_daily_sentiment_summary(date, symbol)
-    #         else:
-    #             # Calculate summary for last N days
-    #             end_date = datetime.now()
-    #             start_date = end_date - timedelta(days=days)
-                
-    #             articles, _ = self.db.get_articles_by_date_range(
-    #                 start_date=start_date.strftime("%Y-%m-%d"),
-    #                 end_date=end_date.strftime("%Y-%m-%d"),
-    #                 symbol=symbol
-    #             )
-                
-    #             if not articles:
-    #                 return {
-    #                     "total_articles": 0,
-    #                     "sentiment_distribution": {
-    #                         "positive": 0,
-    #                         "negative": 0,
-    #                         "neutral": 0
-    #                     },
-    #                     "average_sentiment": 0
-    #                 }
-                
-    #             # Calculate statistics
-    #             positive = sum(1 for a in articles if a['sentiment_label'] == 'POSITIVE')
-    #             negative = sum(1 for a in articles if a['sentiment_label'] == 'NEGATIVE')
-    #             neutral = sum(1 for a in articles if a['sentiment_label'] == 'NEUTRAL')
-                
-    #             return {
-    #                 "total_articles": len(articles),
-    #                 "sentiment_distribution": {
-    #                     "positive": positive,
-    #                     "negative": negative,
-    #                     "neutral": neutral
-    #                 },
-    #                 "average_sentiment": sum(a['sentiment_score'] for a in articles) / len(articles)
-    #             }
-                
-    #     except Exception as e:
-    #         self.logger.error(f"Error getting sentiment summary: {str(e)}")
-    #         return {}
 
     def get_trending_topics(self, days: int = NewsConfig.TRENDING_DAYS) -> List[Dict]:
         """

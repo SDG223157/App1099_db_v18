@@ -217,39 +217,54 @@
                 }
             };
 
-            const fetchNews = async (symbol) => {
-                try {
-                    loadingIndicator.classList.remove('hidden');
-                    fetchButton.disabled = true;
+            const fetchNewsWithRetry = async (symbol, retries = 3, delay = 1000) => {
+                for (let attempt = 1; attempt <= retries; attempt++) {
+                    try {
+                        loadingIndicator.classList.remove('hidden');
+                        fetchButton.disabled = true;
+                        loadingIndicator.querySelector('p').textContent = 
+                            `Fetching news... (Attempt ${attempt}/${retries})`;
 
-                    const response = await fetch('/news/api/fetch', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json'
-                        },
-                        body: JSON.stringify({
-                            symbols: [symbol],
-                            limit: 10
-                        })
-                    });
+                        const response = await fetch('/news/api/fetch', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify({
+                                symbols: [symbol],
+                                limit: 10
+                            })
+                        });
 
-                    if (!response.ok) throw new Error(`Error: ${response.status}`);
-                    const data = await response.json();
-                    renderArticles(data.articles);
+                        if (!response.ok) {
+                            const errorData = await response.json();
+                            throw new Error(errorData.message || `Server error: ${response.status}`);
+                        }
+                        
+                        const data = await response.json();
+                        renderArticles(data.articles);
+                        return;
 
-                } catch (error) {
-                    console.error('Fetch error:', error);
-                    alert('Failed to fetch news');
-                } finally {
-                    loadingIndicator.classList.add('hidden');
-                    fetchButton.disabled = false;
+                    } catch (error) {
+                        console.warn(`Attempt ${attempt} failed:`, error);
+                        
+                        if (attempt === retries) {
+                            console.error('All fetch attempts failed:', error);
+                            alert(`Failed to fetch news: ${error.message || 'Unknown error'}`);
+                            throw error;
+                        }
+                        
+                        // Wait before retrying
+                        await new Promise(r => setTimeout(r, delay));
+                    }
                 }
             };
 
-            const batchFetch = async () => {
+            const batchFetchWithRetry = async () => {
                 try {
                     loadingIndicator.classList.remove('hidden');
                     batchFetchButton.disabled = true;
+                    
                     function shuffle(array) {
                         const newArray = [...array];
                         for (let i = newArray.length - 1; i > 0; i--) {
@@ -267,40 +282,143 @@
                             <div class="w-full bg-gray-200 rounded-full h-2.5">
                                 <div id="progressBar" class="bg-green-600 h-2.5 rounded-full transition-all duration-300" style="width: 0%"></div>
                             </div>
-                            <p id="progressText" class="text-sm text-gray-600 mt-1">Processing: 0/${DEFAULT_SYMBOLS.length} symbols</p>
+                            <p id="progressText" class="text-sm text-gray-600 mt-1">Processing: 0/${selectedSymbols.length} symbols</p>
+                            <p id="failedSymbols" class="text-sm text-red-600 mt-1 hidden">Failed symbols: 0</p>
                         </div>
                     `;
                     loadingIndicator.appendChild(progressDiv);
 
                     let allArticles = [];
-                    for (let i = 0; i < selectedSymbols.length; i++) {
-                        const response = await fetch('/news/api/fetch', {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json'
-                            },
-                            body: JSON.stringify({
-                                symbols: [selectedSymbols[i]],
-                                limit: 2
-                            })
-                        });
-
-                        if (!response.ok) throw new Error(`Error: ${response.status}`);
-                        const data = await response.json();
-                        allArticles = allArticles.concat(data.articles || []);
-
-                        const progress = ((i + 1) / DEFAULT_SYMBOLS.length) * 100;
-                        document.getElementById('progressBar').style.width = `${progress}%`;
-                        document.getElementById('progressText').textContent = 
-                            `Processing: ${i + 1}/${selectedSymbols.length} - Current Symbol: ${selectedSymbols[i]}`;
+                    let failedCount = 0;
+                    const failedSymbols = [];
                     
+                    // Process in smaller chunks with delays between chunks
+                    const chunkSize = 5;
+                    for (let i = 0; i < selectedSymbols.length; i += chunkSize) {
+                        // Process a chunk of symbols
+                        const chunk = selectedSymbols.slice(i, i + chunkSize);
+                        
+                        // Process each symbol in the chunk with throttling
+                        for (let j = 0; j < chunk.length; j++) {
+                            const symbol = chunk[j];
+                            const symbolIndex = i + j;
+                            
+                            try {
+                                // Try up to 2 times for each symbol
+                                let retries = 2;
+                                let success = false;
+                                
+                                while (retries > 0 && !success) {
+                                    try {
+                                        const response = await fetch('/news/api/fetch', {
+                                            method: 'POST',
+                                            headers: { 'Content-Type': 'application/json' },
+                                            body: JSON.stringify({
+                                                symbols: [symbol],
+                                                limit: 2,
+                                                timeout: 10000 
+                                            }),
+                                            signal: AbortSignal.timeout(15000)
+                                        });
+
+                                        if (!response.ok) {
+                                            const errorData = await response.json();
+                                            throw new Error(errorData.message || `Error: ${response.status}`);
+                                        }
+                                        
+                                        const data = await response.json();
+                                        allArticles = allArticles.concat(data.articles || []);
+                                        success = true;
+                                    } catch (error) {
+                                        const errorMessage = error.message || 'Unknown error';
+                                        console.warn(`Error fetching ${symbol}, retries left: ${retries-1}`, error);
+                                        
+                                        // Log more details for debugging
+                                        let detailedError = errorMessage;
+                                        if (error.response) {
+                                            detailedError += ` (Status: ${error.response.status})`;
+                                        }
+                                        
+                                        // Add to visible error log
+                                        const errorLogElement = document.getElementById('errorLog') || 
+                                                               (() => {
+                                                                   const el = document.createElement('div');
+                                                                   el.id = 'errorLog';
+                                                                   el.className = 'hidden mt-4 p-2 bg-red-50 text-xs border border-red-200 rounded max-h-40 overflow-y-auto';
+                                                                   loadingIndicator.appendChild(el);
+                                                                   return el;
+                                                               })();
+                                        
+                                        errorLogElement.innerHTML += `<div>${symbol}: ${detailedError}</div>`;
+                                        
+                                        // Continue with retry logic
+                                        retries--;
+                                        if (retries === 0) {
+                                            failedCount++;
+                                            failedSymbols.push(symbol);
+                                            const failedSymbolsEl = document.getElementById('failedSymbols');
+                                            failedSymbolsEl.textContent = `Failed symbols: ${failedCount}`;
+                                            failedSymbolsEl.classList.remove('hidden');
+                                        } else {
+                                            // Longer wait between retries (3 seconds)
+                                            await new Promise(r => setTimeout(r, 3000));
+                                        }
+                                    }
+                                }
+
+                                // Update progress
+                                const progress = ((symbolIndex + 1) / selectedSymbols.length) * 100;
+                                document.getElementById('progressBar').style.width = `${progress}%`;
+                                document.getElementById('progressText').textContent = 
+                                    `Processing: ${symbolIndex + 1}/${selectedSymbols.length} - Current Symbol: ${symbol}`;
+                                
+                                // Add small delay between each symbol request to avoid overwhelming the API
+                                await new Promise(r => setTimeout(r, 1000));
+                                
+                            } catch (error) {
+                                console.error(`Fatal error processing symbol ${symbol}:`, error);
+                                continue;
+                            }
+                        }
+                        
+                        // Add a pause between chunks
+                        await new Promise(r => setTimeout(r, 3000));
+                        
+                        // Show more detailed progress
+                        const processedSoFar = Math.min(i + chunkSize, selectedSymbols.length);
+                        document.getElementById('progressText').textContent = 
+                            `Processed ${processedSoFar}/${selectedSymbols.length} symbols. Continuing...`;
+                    }
+
+                    // Show failed symbols in the UI for debugging
+                    if (failedSymbols.length > 0) {
+                        // Analyze patterns in failed symbols
+                        const exchangeFailures = {};
+                        failedSymbols.forEach(symbol => {
+                            const exchange = symbol.split(':')[0] || 'UNKNOWN';
+                            exchangeFailures[exchange] = (exchangeFailures[exchange] || 0) + 1;
+                        });
+                        
+                        console.log('Failed symbols by exchange:', exchangeFailures);
+                        
+                        // Show summary in UI
+                        const exchangeAnalysis = Object.entries(exchangeFailures)
+                            .map(([exchange, count]) => `${exchange}: ${count}`)
+                            .join(', ');
+                        
+                        const analysisElement = document.createElement('div');
+                        analysisElement.className = "mt-2 text-sm text-red-600";
+                        analysisElement.innerHTML = `
+                            <div>Failed by exchange: ${exchangeAnalysis}</div>
+                        `;
+                        loadingIndicator.appendChild(analysisElement);
                     }
 
                     renderArticles(allArticles);
 
                 } catch (error) {
                     console.error('Batch fetch error:', error);
-                    alert('Failed to fetch news');
+                    alert(`Failed to fetch news: ${error.message || 'Unknown error'}`);
                 } finally {
                     loadingIndicator.classList.add('hidden');
                     batchFetchButton.disabled = false;
@@ -398,11 +516,37 @@
                     alert('Please enter a stock symbol');
                     return;
                 }
-                await fetchNews(symbol);
+                try {
+                    await fetchNewsWithRetry(symbol);
+                } catch (error) {
+                    // Error is already handled in the fetchNewsWithRetry function
+                } finally {
+                    loadingIndicator.classList.add('hidden');
+                    loadingIndicator.querySelector('p').textContent = 'Fetching news...';
+                    fetchButton.disabled = false;
+                }
             });
 
-            batchFetchButton.addEventListener('click', batchFetch);
+            batchFetchButton.addEventListener('click', batchFetchWithRetry);
             updateAiSummaryButton.addEventListener('click', updateAiSummaries);
+
+            // Add this button to fetch only most reliable symbols
+            const reliableButton = document.createElement('button');
+            reliableButton.className = "ml-2 px-2 py-1 bg-blue-600 text-white text-xs rounded";
+            reliableButton.textContent = "Try Reliable Symbols Only";
+            reliableButton.onclick = () => {
+                // Filter to only use the most reliable exchanges
+                const reliableSymbols = DEFAULT_SYMBOLS.filter(symbol => 
+                    symbol.startsWith('NASDAQ:') || 
+                    symbol.startsWith('NYSE:') || 
+                    symbol.startsWith('AMEX:')
+                ).slice(0, 30); // Limit to 30 symbols
+                
+                batchFetchWithSelectedSymbols(reliableSymbols);
+            };
+
+            // Add button near the failed symbols count
+            document.getElementById('failedSymbols').parentNode.appendChild(reliableButton);
         });
     </script>
 </body>
